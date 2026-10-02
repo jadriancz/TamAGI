@@ -491,7 +491,46 @@ class TamAGIAgent:
         # Memory retrieval is intentionally not injected automatically — TamAGI
         # uses the recall_memory skill to pull context on-demand. Auto-injection
         # caused self-referential noise and redundant recall calls.
+        #
+        # Exception (fix #2): on a brand-new conversation the model otherwise
+        # starts completely blind — the recall_memory skill only helps if it
+        # thinks to call it, which weak models rarely do. Inject a small,
+        # bounded summary of the most recent memories so a new chat continues
+        # from where the relationship left off. Existing conversations are
+        # untouched: their history already provides context.
         memories: list = []
+        memory_ctx = ""
+        if is_new_conv:
+            try:
+                # The recall path filters by relevance_threshold (0.5), which the
+                # default MiniLM embedding almost never meets even for clearly
+                # related text (typical distances 0.55–0.7). For the continuity
+                # summary we bypass the threshold and take the newest entries.
+                got = self.memory._collection.get(
+                    where={"memory_type": MemoryType.CONVERSATION.value},
+                    include=["documents", "metadatas"],
+                ) if hasattr(self.memory, "_collection") and self.memory._collection else None
+                if got and got["documents"]:
+                    pairs = sorted(
+                        zip(got["documents"], got["metadatas"]),
+                        key=lambda p: float(p[1].get("timestamp", 0)),
+                        reverse=True,
+                    )[:5]
+                    lines = [doc.strip()[:400] for doc, _ in pairs]
+                else:
+                    lines = []
+                if lines:
+                    memory_ctx = (
+                        "\n\n[Memory context — your recent shared history, for "
+                        "continuity. Don't recite it; use it if relevant:]\n"
+                        + "\n".join(f"- {line}" for line in lines)
+                    )
+                    logger.info(
+                        "Injected %d recent memories into new conversation %s",
+                        len(lines), conv.id,
+                    )
+            except Exception as exc:
+                logger.warning("Memory injection failed (new conversation): %s", exc)
 
         # 2. Build messages for LLM
         # Layer: personality base + identity/soul context
@@ -514,6 +553,8 @@ class TamAGIAgent:
             ws_ctx = self._world_thread.get_world_state_context()
             if ws_ctx:
                 system_prompt += f"\n{ws_ctx}"
+        if memory_ctx:
+            system_prompt += memory_ctx
 
         # For new conversations: pause the world thread (visitor is here) and inject
         # an arrival framing so the TamAGI knows they're being visited at their location.
@@ -836,6 +877,20 @@ class TamAGIAgent:
 
         # 6b. Brain: reflection, capability nudging, periodic self-model save
         elapsed = time.time() - _start
+        if _transient_goal_id:
+            goal_status = self._update_transient_goal_status(
+                _transient_goal_id, plan_executor_outcome, llm_error
+            )
+            if goal_status:
+                sm_mutations.append({
+                    "op": "update",
+                    "node_type": "quest",
+                    "id": _transient_goal_id,
+                    "fields": ["status", "progress"],
+                    "status": goal_status,
+                    "progress": self.self_model.get_node(_transient_goal_id).get("progress", "") if self.self_model else "",
+                })
+
         if self.reflection_engine and active_plan:
             try:
                 if plan_executor_outcome:
@@ -1149,8 +1204,63 @@ class TamAGIAgent:
 
         return score >= 3
 
+    def _update_transient_goal_status(
+        self,
+        goal_id: str,
+        outcome: ActualOutcome | None,
+        llm_error: str | None,
+    ) -> str | None:
+        """Keep unfinished planned goals active; persist only verified completion."""
+        if not self.self_model:
+            return None
+        node = self.self_model.get_node(goal_id)
+        if not node or node.get("node_type") != "quest":
+            return None
+
+        outcomes = outcome.step_outcomes if outcome else []
+        completed = bool(
+            not llm_error
+            and outcome is not None
+            and outcomes
+            and outcome.success >= 1.0
+            and all(step.get("success") is True for step in outcomes)
+        )
+        status = "complete" if completed else "active"
+        if completed:
+            progress = "All planned steps succeeded."
+        elif outcomes:
+            step_notes = [
+                f"{step.get('step_id', 'step')}: {'succeeded' if step.get('success') is True else 'still pending/failed'}"
+                for step in outcomes
+            ]
+            progress = "; ".join(step_notes)[:1000]
+        elif llm_error:
+            progress = f"Execution interrupted: {llm_error}"[:1000]
+        else:
+            progress = "Plan not completed; continue with a concrete next step."
+
+        if node.get("status") == status and node.get("progress", "") == progress:
+            return status
+
+        try:
+            self.self_model._apply_update_node(
+                goal_id, {"status": status, "progress": progress}
+            )
+            self.self_model.save()
+        except Exception as exc:
+            try:
+                self.self_model._apply_update_node(
+                    goal_id,
+                    {"status": node.get("status", "active"), "progress": node.get("progress", "")},
+                )
+            except Exception:
+                pass
+            logger.warning("Could not persist transient goal status for %s: %s", goal_id, exc)
+            return node.get("status", "active")
+        return status
+
     def _create_transient_goal(self, user_message: str) -> str | None:
-        """Create a transient quest node for this interaction (used by the planning engine)."""
+        """Create a persisted quest for a complex request that may need follow-up."""
         if not self.self_model:
             return None
         try:
@@ -1163,6 +1273,7 @@ class TamAGIAgent:
                 "status": "active",
             })
             self.self_model.auto_wire_node(quest_id)
+            self.self_model.save()
             return quest_id
         except Exception as exc:
             logger.debug("Could not create transient quest: %s", exc)

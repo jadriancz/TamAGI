@@ -957,7 +957,20 @@
 <script>
 const API=window.location.origin;
 const WS_URL=API.replace(/^http/,'ws')+'/api/ws';
-let convId=null,loading=false;
+let convId=localStorage.getItem('tamagi-active-conv')||null,loading=false;
+function rememberConv(id){if(id){localStorage.setItem('tamagi-active-conv',id)}else{localStorage.removeItem('tamagi-active-conv')}}
+// Restore the last active conversation on page load so a reload/restart doesn't
+// silently start a blank chat (the bot would otherwise see no history).
+async function restoreLastConversation(){
+  const saved=localStorage.getItem('tamagi-active-conv');
+  if(!saved)return;
+  try{
+    const d=await api('/conversations');
+    if((d.conversations||[]).some(c=>c.id===saved)){await openConversation(saved);return;}
+  }catch(e){console.error(e)}
+  // Stale id (history cleared server-side) — drop it and start fresh.
+  convId=null;rememberConv(null);
+}
 let ws=null,wsReady=false;
 let liveToolOutputs={};
 let currentInterimGroup=null;
@@ -994,7 +1007,7 @@ function handleWsEvent(ev){
   }else if(ev.type==='message'){
     setTyping(false);clearLiveTags();
     if(currentInterimGroup){currentInterimGroup.classList.add('collapsed');currentInterimGroup=null;}
-    convId=ev.conversation_id;updateState(ev.state);
+    convId=ev.conversation_id;rememberConv(convId);updateState(ev.state);
     const skills=(ev.skills_used||[]).map(name=>({name,output:(liveToolOutputs[name]||[]).join('\n')}));
     liveToolOutputs={};
     addMsg('assistant',ev.response,skills,null,ev.context_compressed||0,ev.sm_mutations||[]);
@@ -1578,8 +1591,8 @@ function debounce(fn,ms){let t;return function(...a){clearTimeout(t);t=setTimeou
 function relativeTime(ts){if(!ts)return'';const d=typeof ts==='number'?new Date(ts*1000):new Date(ts);const diff=Math.floor((Date.now()-d)/1000);if(diff<60)return diff+'s ago';if(diff<3600)return Math.floor(diff/60)+'m ago';if(diff<86400)return Math.floor(diff/3600)+'h ago';return Math.floor(diff/86400)+'d ago'}
 
 async function loadConversations(){try{const d=await api('/conversations');const list=document.getElementById('conv-list');list.innerHTML='';(d.conversations||[]).forEach(c=>{const el=document.createElement('div');el.className=`conv-item${c.id===convId?' active':''}`;el.onclick=()=>openConversation(c.id);const dt=new Date(c.updated_at*1000).toLocaleDateString([],{month:'short',day:'numeric'});el.innerHTML=`<div class="ci-title">${esc(c.title)}</div><div class="ci-meta">${c.message_count} msgs \u00b7 ${dt}</div>`;list.appendChild(el)})}catch{}}
-async function openConversation(id){try{const d=await api(`/conversations/${id}`);convId=id;const area=document.getElementById('chat-messages');area.innerHTML='';(d.messages||[]).forEach(m=>{const thinking=m.metadata?.thinking_blocks||[];const interim=m.metadata?.interim_messages||[];if(m.role==='assistant'&&(thinking.length||interim.length)){const hasThinking=thinking.length>0;const label=hasThinking?'Thinking':'Reasoning';const totalSteps=thinking.length+interim.length;const wrapper=document.createElement('div');wrapper.className='msg assistant';wrapper.innerHTML='<div class="interim-group collapsed" data-has-thinking="'+(hasThinking?'1':'0')+'" data-count="'+totalSteps+'"><button class="interim-toggle" onclick="toggleInterim(this)"><span class="interim-chevron">▶</span><span class="interim-label"><span class="interim-kind">'+label+'</span> · <span class="interim-count">'+totalSteps+(totalSteps===1?' step':' steps')+'</span></span></button><div class="interim-body">'+thinking.map(s=>'<div class="thinking-entry">'+renderMd(s)+'</div>').join('')+interim.map(s=>'<div class="interim-entry">'+renderMd(s)+'</div>').join('')+'</div></div>';area.appendChild(wrapper);}addMsg(m.role,m.content,m.metadata?.skills_used,m.timestamp,m.metadata?.context_compressed||0,m.metadata?.sm_mutations||[]);});loadConversations();closeDrawer()}catch(e){console.error(e)}}
-function newConversation(){convId=null;document.getElementById('chat-messages').innerHTML=`<div class="welcome-msg" id="welcome"><strong>New conversation!</strong><br>What shall we explore?</div>`;loadConversations();closeDrawer();document.getElementById('input').focus()}
+async function openConversation(id){try{const d=await api(`/conversations/${id}`);convId=id;rememberConv(convId);const area=document.getElementById('chat-messages');area.innerHTML='';(d.messages||[]).forEach(m=>{const thinking=m.metadata?.thinking_blocks||[];const interim=m.metadata?.interim_messages||[];if(m.role==='assistant'&&(thinking.length||interim.length)){const hasThinking=thinking.length>0;const label=hasThinking?'Thinking':'Reasoning';const totalSteps=thinking.length+interim.length;const wrapper=document.createElement('div');wrapper.className='msg assistant';wrapper.innerHTML='<div class="interim-group collapsed" data-has-thinking="'+(hasThinking?'1':'0')+'" data-count="'+totalSteps+'"><button class="interim-toggle" onclick="toggleInterim(this)"><span class="interim-chevron">▶</span><span class="interim-label"><span class="interim-kind">'+label+'</span> · <span class="interim-count">'+totalSteps+(totalSteps===1?' step':' steps')+'</span></span></button><div class="interim-body">'+thinking.map(s=>'<div class="thinking-entry">'+renderMd(s)+'</div>').join('')+interim.map(s=>'<div class="interim-entry">'+renderMd(s)+'</div>').join('')+'</div></div>';area.appendChild(wrapper);}addMsg(m.role,m.content,m.metadata?.skills_used,m.timestamp,m.metadata?.context_compressed||0,m.metadata?.sm_mutations||[]);});loadConversations();closeDrawer()}catch(e){console.error(e)}}
+function newConversation(){convId=null;rememberConv(null);document.getElementById('chat-messages').innerHTML=`<div class="welcome-msg" id="welcome"><strong>New conversation!</strong><br>What shall we explore?</div>`;loadConversations();closeDrawer();document.getElementById('input').focus()}
 
 function openDrawer(){document.getElementById('drawer').classList.add('open');document.getElementById('drawer-overlay').classList.add('open');switchTab('chats');loadConversations()}
 function closeDrawer(){document.getElementById('drawer').classList.remove('open');document.getElementById('drawer-overlay').classList.remove('open')}
@@ -1925,7 +1938,7 @@ document.addEventListener('DOMContentLoaded',async()=>{initLayout();initResize()
 _rigBones=applyPivotDefaults(PRESETS.default.bones());
 await loadSpriteConfig();
 requestAnimationFrame(_rigTick);
-connectWS();await loadState();loadConversations();const needsOb=await checkOnboarding();if(!needsOb)await checkWorldSeed();setInterval(loadState,30000)});
+connectWS();await loadState();await restoreLastConversation();loadConversations();const needsOb=await checkOnboarding();if(!needsOb)await checkWorldSeed();setInterval(loadState,30000)});
 async function loadState(){
   try{
     const d=await api('/state');

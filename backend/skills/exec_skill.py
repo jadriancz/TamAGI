@@ -244,7 +244,15 @@ class ExecSkill(Skill):
                 )
             except asyncio.TimeoutError:
                 process.kill()
-                await process.wait()
+                # On Windows (Proactor loop) cancelling the pipe read can hang
+                # past the timeout — cap the reaper so the skill always returns.
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Exec skill: subprocess %s survived kill after %ss timeout; "
+                        "abandoning it.", parts[0], timeout,
+                    )
                 return SkillResult(
                     success=False,
                     error=f"Command timed out after {timeout}s",

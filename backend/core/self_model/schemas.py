@@ -86,6 +86,7 @@ class QuestNode:
     title: str = ""
     description: str = ""
     status: str = QuestStatus.ACTIVE.value
+    progress: str = ""
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -97,6 +98,7 @@ class QuestNode:
             "title": self.title,
             "description": self.description,
             "status": self.status,
+            "progress": self.progress,
             "created_at": self.created_at,
         }
 
@@ -107,6 +109,7 @@ class QuestNode:
             title=data.get("title", ""),
             description=data.get("description", ""),
             status=data.get("status", QuestStatus.ACTIVE.value),
+            progress=data.get("progress", ""),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
         )
 

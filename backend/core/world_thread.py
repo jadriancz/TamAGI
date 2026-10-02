@@ -64,6 +64,27 @@ def _first_sentence(s: str) -> str:
     return s[:100].strip() if len(s) > 100 else s.strip()
 
 
+def _format_active_quests(quests: list) -> str:
+    """Format persisted quests for injection into an autonomous tick."""
+    if not quests:
+        return ""
+    lines = ["Active pursuits:"]
+    for quest in quests:
+        title = quest.title or (quest.description[:60] if quest.description else quest.id)
+        description = quest.description.strip()
+        lines.append(f"- {title} (id={quest.id})")
+        if description and description != title:
+            lines.append(f"  Details: {description}")
+        if quest.progress.strip():
+            lines.append(f"  Progress so far: {quest.progress.strip()}")
+    lines.append(
+        "Continue one concrete step on an active pursuit when appropriate. "
+        "Keep it active until the work is verifiably complete; update its status "
+        "to complete only after successful execution, or abandoned if it is no longer wanted."
+    )
+    return "\n".join(lines)
+
+
 # ── System Prompt ─────────────────────────────────────────────
 
 _WORLD_SYSTEM_PROMPT = """\
@@ -376,11 +397,7 @@ class WorldThread:
                 user_content += "\n- Something else — let what's present now guide you."
 
             if active_quests:
-                lines = ["Active pursuits:"]
-                for q in active_quests:
-                    title = q.title or (q.description[:60] if q.description else q.id)
-                    lines.append(f"- {title} (id={q.id})")
-                user_content += "\n\n" + "\n".join(lines)
+                user_content += "\n\n" + _format_active_quests(active_quests)
 
             # Build message list from thread history + new user turn
             messages = self._build_messages(user_content)

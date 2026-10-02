@@ -123,6 +123,8 @@ async def lifespan(app: FastAPI):
         workspace_path=config.workspace.path,
         done_cap=config.task_board.done_cap,
     ))
+    from backend.skills.recall_autonomy_skill import RecallAutonomySkill
+    skills.register(RecallAutonomySkill())
 
     # Migrate custom skills from backend/skills/custom/ to workspace/skills/
     workspace_skills = Path(config.workspace.path) / "skills"

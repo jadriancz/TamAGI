@@ -110,21 +110,24 @@ class WorldStateStore:
 
 # ── Parser ────────────────────────────────────────────────────
 
-# Field label patterns — flexible matching for LLM formatting variation
+# Allow Markdown bold around field labels, with the colon inside or outside.
+_BOLD_LABEL = r"\*{0,2}"
+_FIELD_COLON = rf"{_BOLD_LABEL}\s*{_BOLD_LABEL}:\s*{_BOLD_LABEL}"
+_FIELD_BOUNDARY = rf"\n\s*{_BOLD_LABEL}"
 _LOCATION_RE = re.compile(
-    r"(?:location(?:/setting)?|setting)\s*:\s*(.+?)(?=\n(?:internal|mood|current focus|focus|available)|$)",
+    rf"(?:location(?:/setting)?|setting){_FIELD_COLON}(.+?)(?={_FIELD_BOUNDARY}(?:internal|mood|current focus|focus|available)|$)",
     re.IGNORECASE | re.DOTALL,
 )
 _MOOD_RE = re.compile(
-    r"(?:internal state(?:/mood)?|mood)\s*:\s*(.+?)(?=\n(?:current focus|focus|available)|$)",
+    rf"(?:internal state(?:/mood)?|mood){_FIELD_COLON}(.+?)(?={_FIELD_BOUNDARY}(?:current focus|focus|available)|$)",
     re.IGNORECASE | re.DOTALL,
 )
 _FOCUS_RE = re.compile(
-    r"(?:current focus(?:/object of attention)?|focus)\s*:\s*(.+?)(?=\n(?:available)|$)",
+    rf"(?:current focus(?:/object of attention)?|focus){_FIELD_COLON}(.+?)(?={_FIELD_BOUNDARY}available|$)",
     re.IGNORECASE | re.DOTALL,
 )
 _ACTIONS_RE = re.compile(
-    r"(?:available actions(?:/next steps)?)\s*:\s*(.+?)$",
+    rf"(?:available actions(?:/next steps)?){_FIELD_COLON}(.+?)$",
     re.IGNORECASE | re.DOTALL,
 )
 _NEW_STATE_BLOCK_RE = re.compile(

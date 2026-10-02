@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -420,8 +422,29 @@ class SelfModel:
         out_path = Path(path) if path else self._data_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
         data = self.snapshot()
-        with open(out_path, "w") as f:
-            json.dump(data, f, indent=2, default=str)
+        temp_fd, temp_name = tempfile.mkstemp(
+            dir=out_path.parent,
+            prefix=f".{out_path.name}.",
+            suffix=".tmp",
+        )
+        temp_path = Path(temp_name)
+        try:
+            temp_file = os.fdopen(temp_fd, "w", encoding="utf-8")
+            temp_fd = -1  # Ownership transferred to temp_file.
+            with temp_file as f:
+                json.dump(data, f, indent=2, default=str)
+            os.replace(temp_path, out_path)
+        except BaseException:
+            if temp_fd >= 0:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to remove temporary self-model file %s", temp_path, exc_info=True)
+            raise
         logger.info("Self-model saved (%d nodes, %d edges)", data["node_count"], data["edge_count"])
         return out_path
 

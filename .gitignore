@@ -25,3 +25,7 @@ Thumbs.db
 backend/skills/custom/
 *phase1*
 AI_ENV*
+
+# Local Windows runtime managed for this checkout
+/.runtime/
+/.venv-linux-legacy/

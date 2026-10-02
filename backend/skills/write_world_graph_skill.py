@@ -8,6 +8,7 @@ auto-wiring fills in obvious connections automatically.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, TYPE_CHECKING
 
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 
 _WORLD_TYPES = {"location", "quest", "event", "skill", "perk", "known", "mystery", "lore"}
 _EDGE_TYPES  = {"located_at", "advances", "requires", "leads_to", "unlocks", "resolves", "relates_to"}
+logger = logging.getLogger("tamagi.skills.world_graph")
 
 
 class WriteWorldGraphSkill(Skill):
@@ -116,6 +118,36 @@ class WriteWorldGraphSkill(Skill):
     def __init__(self, agent: "TamAGIAgent") -> None:
         self._agent = agent
 
+    def _save_failure(self, sm, change: str) -> SkillResult | None:
+        """Persist the graph, returning a failure result if the save fails."""
+        try:
+            sm.save()
+        except Exception as exc:
+            logger.exception("World graph save failed after %s", change)
+            return SkillResult(
+                success=False,
+                error=f"Save failed: {exc}",
+                output=(
+                    f"{change} in memory, but saving the world graph to disk failed: {exc}. "
+                    "The change will be lost on restart."
+                ),
+            )
+        return None
+
+    def _try_add_edge(self, sm, source_id: str, target_id: str, edge_type: str) -> bool:
+        try:
+            sm._apply_add_edge(source_id, target_id, edge_type)
+            return True
+        except Exception:
+            logger.warning(
+                "Could not add edge %s -[%s]-> %s",
+                source_id,
+                edge_type,
+                target_id,
+                exc_info=True,
+            )
+            return False
+
     async def execute(self, **kwargs: Any) -> SkillResult:
         sm = getattr(self._agent, "self_model", None)
         if not sm:
@@ -188,18 +220,14 @@ class WriteWorldGraphSkill(Skill):
                 if not tid or etype not in _EDGE_TYPES or sm.get_node(tid) is None:
                     continue
                 if not sm._graph.has_edge(existing_id, tid):
-                    try:
-                        sm._apply_add_edge(existing_id, tid, etype)
+                    if self._try_add_edge(sm, existing_id, tid, etype):
                         explicit_edges += 1
-                    except Exception:
-                        pass
 
             node = sm.get_node(existing_id) or {}
             label = node.get("name") or node.get("title") or node.get("description", existing_id)[:60]
-            try:
-                sm.save()
-            except Exception:
-                pass
+            failure = self._save_failure(sm, f"Merged with existing {node_type} node {existing_id!r}")
+            if failure:
+                return failure
             edge_note = f" (+{explicit_edges} edge(s))" if explicit_edges else ""
             return SkillResult(
                 success=True,
@@ -240,10 +268,7 @@ class WriteWorldGraphSkill(Skill):
                 # Find a location node matching the current world state location
                 for loc in sm.get_locations():
                     if loc_name and (loc_name.lower() in (loc.name + loc.description).lower()):
-                        try:
-                            sm._apply_add_edge(node_id, loc.id, "located_at")
-                        except Exception:
-                            pass
+                        self._try_add_edge(sm, node_id, loc.id, "located_at")
                         break
 
         # Auto-wire + explicit relationships
@@ -257,18 +282,14 @@ class WriteWorldGraphSkill(Skill):
                 continue
             if sm.get_node(tid) is None:
                 continue
-            try:
-                sm._apply_add_edge(node_id, tid, etype)
+            if self._try_add_edge(sm, node_id, tid, etype):
                 explicit_edges += 1
-            except Exception:
-                pass
 
         node = sm.get_node(node_id) or {}
         label = node.get("name") or node.get("title") or node.get("description", node_id)[:60]
-        try:
-            sm.save()
-        except Exception:
-            pass
+        failure = self._save_failure(sm, f"Added {node_type} node {node_id!r}")
+        if failure:
+            return failure
         return SkillResult(
             success=True,
             output=(
@@ -310,21 +331,17 @@ class WriteWorldGraphSkill(Skill):
             if not tid or etype not in _EDGE_TYPES or sm.get_node(tid) is None:
                 continue
             if not sm._graph.has_edge(node_id, tid):
-                try:
-                    sm._apply_add_edge(node_id, tid, etype)
+                if self._try_add_edge(sm, node_id, tid, etype):
                     explicit_edges += 1
-                except Exception:
-                    pass
 
         result_msg = f"Updated node {node_id}: {list(attrs.keys())}"
         if explicit_edges:
             result_msg += f" (+{explicit_edges} new edge(s))"
         node = sm.get_node(node_id) or {}
         ntype = node.get("node_type", "")
-        try:
-            sm.save()
-        except Exception:
-            pass
+        failure = self._save_failure(sm, f"Updated node {node_id!r}")
+        if failure:
+            return failure
         return SkillResult(
             success=True,
             output=result_msg,
@@ -350,17 +367,16 @@ class WriteWorldGraphSkill(Skill):
 
         try:
             sm._apply_add_edge(source_id, target_id, edge_type)
-            try:
-                sm.save()
-            except Exception:
-                pass
-            return SkillResult(
-                success=True,
-                output=f"Edge added: {source_id} -[{edge_type}]-> {target_id}",
-                data={"source": source_id, "target": target_id, "edge_type": edge_type},
-            )
         except Exception as exc:
             return SkillResult(success=False, error=str(exc), output=str(exc))
+        failure = self._save_failure(sm, f"Added edge {source_id} -[{edge_type}]-> {target_id}")
+        if failure:
+            return failure
+        return SkillResult(
+            success=True,
+            output=f"Edge added: {source_id} -[{edge_type}]-> {target_id}",
+            data={"source": source_id, "target": target_id, "edge_type": edge_type},
+        )
 
     async def _delete_node(self, sm, kwargs: dict) -> SkillResult:
         node_id = str(kwargs.get("node_id", "")).strip()
@@ -380,10 +396,9 @@ class WriteWorldGraphSkill(Skill):
 
         # NetworkX removes all incident edges automatically
         sm._graph.remove_node(node_id)
-        try:
-            sm.save()
-        except Exception:
-            pass
+        failure = self._save_failure(sm, f"Deleted node {node_id!r}")
+        if failure:
+            return failure
 
         return SkillResult(
             success=True,
