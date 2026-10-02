@@ -94,7 +94,8 @@ async def run_tool_loop(
 
             if event_callback:
                 try:
-                    await event_callback({"type": "tool_start", "name": tc.name, "round": round_num + 1})
+                    await event_callback({"type": "tool_start", "name": tc.name, "round": round_num + 1,
+                                          "arguments": tc.arguments, "call_id": tc.id})
                 except Exception:
                     pass
 
@@ -111,7 +112,10 @@ async def run_tool_loop(
                     await event_callback({
                         "type": "tool_result",
                         "name": tc.name,
-                        "output": str(result.output)[:300] if hasattr(result, "output") else str(result)[:300],
+                        "output": str(result.output)[:1000] if hasattr(result, "output") else str(result)[:1000],
+                        "success": getattr(result, "success", False),
+                        "error": getattr(result, "error", None),
+                        "call_id": tc.id,
                     })
                 except Exception:
                     pass
@@ -121,5 +125,15 @@ async def run_tool_loop(
                 json.dumps(result.to_dict() if hasattr(result, "to_dict") else {"output": str(result)}),
                 tool_call_id=tc.id,
             ))
+
+    else:
+        try:
+            response = await llm.chat(messages + [LLMMessage(
+                "user", "Tool budget reached. Do not call more tools. Summarize actual results, "
+                "errors, blockers and the next pending step. Preserve the required response format.",
+            )], tools=None)
+            last_content = response.content or last_content
+        except Exception as exc:
+            logger.warning("tool_loop final summary failed: %s", exc)
 
     return last_content or "...", skills_used

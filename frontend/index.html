@@ -336,6 +336,7 @@
     .approval-banner { border: 1px solid var(--warning,#f0a500); border-radius: var(--radius-md); padding: 10px 12px; margin: 6px 0; background: var(--bg-elevated); }
     .clarification-msg .bubble { border-left: 2px solid var(--warning,#f0a500); padding-left: 10px; }
     .clarification-badge { display: inline-block; font-size: 8px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; color: var(--warning,#f0a500); margin-bottom: 4px; }
+    .proactive-badge { display: inline-block; font-size: 8px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--accent-tertiary); margin-bottom: 4px; opacity: 0.8; }
     .approval-cmd { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); margin-bottom: 4px; }
     .approval-reason { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
     .approval-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -958,7 +959,7 @@
 const API=window.location.origin;
 const WS_URL=API.replace(/^http/,'ws')+'/api/ws';
 let convId=localStorage.getItem('tamagi-active-conv')||null,loading=false;
-function rememberConv(id){if(id){localStorage.setItem('tamagi-active-conv',id)}else{localStorage.removeItem('tamagi-active-conv')}}
+function rememberConv(id){if(id){localStorage.setItem('tamagi-active-conv',id)}else{localStorage.removeItem('tamagi-active-conv')}if(wsReady)ws.send(JSON.stringify({type:'bind_conversation',conversation_id:id||null}))}
 // Restore the last active conversation on page load so a reload/restart doesn't
 // silently start a blank chat (the bot would otherwise see no history).
 async function restoreLastConversation(){
@@ -979,7 +980,7 @@ let activeMemFilter='all';
 
 function connectWS(){
   ws=new WebSocket(WS_URL);
-  ws.onopen=()=>{wsReady=true;setConnected(true)};
+  ws.onopen=()=>{wsReady=true;setConnected(true);if(convId)ws.send(JSON.stringify({type:'bind_conversation',conversation_id:convId}))};
   ws.onclose=(e)=>{
     wsReady=false;setConnected(false);
     // Code 1008 = Policy Violation — server rejected the WS (auth failure)
@@ -1033,6 +1034,13 @@ function handleWsEvent(ev){
     const count=currentInterimGroup.querySelectorAll('.thinking-entry,.interim-entry').length;
     currentInterimGroup.querySelector('.interim-count').textContent=count+(count===1?' step':' steps');
     document.getElementById('chat-messages').scrollTop=99999;
+  }else if(ev.type==='proactive_message'){
+    if(ev.conversation_id!==convId)return;
+    const area=document.getElementById('chat-messages');
+    const welcome=document.getElementById('welcome');if(welcome)welcome.remove();
+    addMsg('assistant',ev.text,[],null,0,[],true);
+    if(ev.state)updateWorldContext(ev.state);
+    loadConversations();
   }else if(ev.type==='pose_change'){
     setPose(ev.pose_parts);
   }else if(ev.type==='tool_approval_required'){
@@ -1553,7 +1561,7 @@ async function sendMessage(){
   }catch(e){setTyping(false);addMsg('assistant',`\u26A0 Error: ${e.message}. Is the backend running?`);loading=false;document.getElementById('send-btn').disabled=false;}
 }
 
-function addMsg(role,content,skills=[],ts=null,compressed=0,smMuts=[]){
+function addMsg(role,content,skills=[],ts=null,compressed=0,smMuts=[],proactive=false){
   const area=document.getElementById('chat-messages');
   const d=document.createElement('div');d.className=`msg ${role}`;
   // Use the stored unix timestamp when replaying history, current time for live messages
@@ -1564,6 +1572,7 @@ function addMsg(role,content,skills=[],ts=null,compressed=0,smMuts=[]){
     return`<span class="skill-tag"${tip?` title="${esc(tip)}"`:''}>&#x2699; ${esc(name)}</span>`;
   }).join('');
   const cmpTag=compressed?`<span class="compact-tag" title="${compressed} older message${compressed===1?'':'s'} archived to long-term memory">&#x25C8; compacted</span>`:'';
+  const proactiveTag=proactive?'<span class="proactive-badge">Initiative</span>':'';
   const smTags=(smMuts||[]).map(m=>{
     if(m.op==='add'){const desc=m.description?` \u00b7 \u201c${esc(m.description)}\u201d`:'';return`<span class="sm-tag add" title="new ${esc(m.node_type)} node \u00b7 id: ${esc(m.id)}${desc}">&#x2295; ${esc(m.node_type)}</span>`;}
     if(m.op==='update'){const fields=esc((m.fields||[]).join(', '));const desc=m.description?` \u00b7 \u201c${esc(m.description)}\u201d`:'';return`<span class="sm-tag update" title="${esc(m.node_type)} ${esc(m.id)}${desc} \u00b7 updated: ${fields}">&#x21bb; ${esc(m.id.length>10?m.id.substring(0,10)+'\u2026':m.id)}</span>`;}
@@ -1578,7 +1587,7 @@ function addMsg(role,content,skills=[],ts=null,compressed=0,smMuts=[]){
     return'';
   }).join('');
   const rendered=role==='assistant'?renderMd(content):esc(content);
-  d.innerHTML=`<div class="bubble">${rendered}</div><div class="time">${t}${sk}${cmpTag}${smTags}</div>`;
+  d.innerHTML=`<div class="bubble">${proactiveTag}${rendered}</div><div class="time">${t}${sk}${cmpTag}${smTags}</div>`;
   area.appendChild(d);area.scrollTop=area.scrollHeight
 }
 function setTyping(v){document.getElementById('typing').classList.toggle('on',v)}
@@ -1591,7 +1600,7 @@ function debounce(fn,ms){let t;return function(...a){clearTimeout(t);t=setTimeou
 function relativeTime(ts){if(!ts)return'';const d=typeof ts==='number'?new Date(ts*1000):new Date(ts);const diff=Math.floor((Date.now()-d)/1000);if(diff<60)return diff+'s ago';if(diff<3600)return Math.floor(diff/60)+'m ago';if(diff<86400)return Math.floor(diff/3600)+'h ago';return Math.floor(diff/86400)+'d ago'}
 
 async function loadConversations(){try{const d=await api('/conversations');const list=document.getElementById('conv-list');list.innerHTML='';(d.conversations||[]).forEach(c=>{const el=document.createElement('div');el.className=`conv-item${c.id===convId?' active':''}`;el.onclick=()=>openConversation(c.id);const dt=new Date(c.updated_at*1000).toLocaleDateString([],{month:'short',day:'numeric'});el.innerHTML=`<div class="ci-title">${esc(c.title)}</div><div class="ci-meta">${c.message_count} msgs \u00b7 ${dt}</div>`;list.appendChild(el)})}catch{}}
-async function openConversation(id){try{const d=await api(`/conversations/${id}`);convId=id;rememberConv(convId);const area=document.getElementById('chat-messages');area.innerHTML='';(d.messages||[]).forEach(m=>{const thinking=m.metadata?.thinking_blocks||[];const interim=m.metadata?.interim_messages||[];if(m.role==='assistant'&&(thinking.length||interim.length)){const hasThinking=thinking.length>0;const label=hasThinking?'Thinking':'Reasoning';const totalSteps=thinking.length+interim.length;const wrapper=document.createElement('div');wrapper.className='msg assistant';wrapper.innerHTML='<div class="interim-group collapsed" data-has-thinking="'+(hasThinking?'1':'0')+'" data-count="'+totalSteps+'"><button class="interim-toggle" onclick="toggleInterim(this)"><span class="interim-chevron">▶</span><span class="interim-label"><span class="interim-kind">'+label+'</span> · <span class="interim-count">'+totalSteps+(totalSteps===1?' step':' steps')+'</span></span></button><div class="interim-body">'+thinking.map(s=>'<div class="thinking-entry">'+renderMd(s)+'</div>').join('')+interim.map(s=>'<div class="interim-entry">'+renderMd(s)+'</div>').join('')+'</div></div>';area.appendChild(wrapper);}addMsg(m.role,m.content,m.metadata?.skills_used,m.timestamp,m.metadata?.context_compressed||0,m.metadata?.sm_mutations||[]);});loadConversations();closeDrawer()}catch(e){console.error(e)}}
+async function openConversation(id){try{const d=await api(`/conversations/${id}`);convId=id;rememberConv(convId);const area=document.getElementById('chat-messages');area.innerHTML='';(d.messages||[]).forEach(m=>{const thinking=m.metadata?.thinking_blocks||[];const interim=m.metadata?.interim_messages||[];if(m.role==='assistant'&&(thinking.length||interim.length)){const hasThinking=thinking.length>0;const label=hasThinking?'Thinking':'Reasoning';const totalSteps=thinking.length+interim.length;const wrapper=document.createElement('div');wrapper.className='msg assistant';wrapper.innerHTML='<div class="interim-group collapsed" data-has-thinking="'+(hasThinking?'1':'0')+'" data-count="'+totalSteps+'"><button class="interim-toggle" onclick="toggleInterim(this)"><span class="interim-chevron">▶</span><span class="interim-label"><span class="interim-kind">'+label+'</span> · <span class="interim-count">'+totalSteps+(totalSteps===1?' step':' steps')+'</span></span></button><div class="interim-body">'+thinking.map(s=>'<div class="thinking-entry">'+renderMd(s)+'</div>').join('')+interim.map(s=>'<div class="interim-entry">'+renderMd(s)+'</div>').join('')+'</div></div>';area.appendChild(wrapper);}addMsg(m.role,m.content,m.metadata?.skills_used,m.timestamp,m.metadata?.context_compressed||0,m.metadata?.sm_mutations||[],!!m.metadata?.proactive);});loadConversations();closeDrawer()}catch(e){console.error(e)}}
 function newConversation(){convId=null;rememberConv(null);document.getElementById('chat-messages').innerHTML=`<div class="welcome-msg" id="welcome"><strong>New conversation!</strong><br>What shall we explore?</div>`;loadConversations();closeDrawer();document.getElementById('input').focus()}
 
 function openDrawer(){document.getElementById('drawer').classList.add('open');document.getElementById('drawer-overlay').classList.add('open');switchTab('chats');loadConversations()}

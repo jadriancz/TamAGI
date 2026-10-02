@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -361,7 +362,7 @@ class PlanningEngine:
             bash_step = ActionStep(
                 step_type=ActionStepType.BASH.value,
                 description="Probe local environment for relevant tools",
-                spec={"command": "python3 --version && pip list --format=columns 2>/dev/null | head -20"},
+                spec={"program": sys.executable, "args": ["--version"]},
                 predicted_outcome={"environment_probed": True},
                 depends_on=[fetch_step.id],
             )

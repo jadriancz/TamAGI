@@ -254,6 +254,8 @@ async def lifespan(app: FastAPI):
         resume_after_conversation=config.autonomy.resume_after_conversation,
     )
     agent.set_world_thread(world_thread)
+    from backend.api.connections import broadcast
+    world_thread.set_broadcaster(broadcast)
 
     # Sleep-time consolidation: distills lived world-thread experience into the
     # agent's own SOUL.md / IDENTITY.md. Triggered after every Nth autonomous tick

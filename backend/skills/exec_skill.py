@@ -21,7 +21,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import platform
 import shlex
+import sys
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -62,9 +65,32 @@ def _save_runtime_trusted() -> None:
     _TRUSTED_FILE.write_text(json.dumps({"trusted": sorted(_runtime_trusted)}, indent=2))
 
 
-def _has_destructive_pattern(command: str) -> bool:
-    tokens = set(shlex.split(command))
-    return bool(tokens & _DESTRUCTIVE_PATTERNS)
+def execution_environment() -> str:
+    return (
+        f"Execution environment: {platform.system()}. exec launches a native program, "
+        "NOT a shell. Use program + args (JSON string array) and working_dir. "
+        "Do not put pipes, redirects, ;, &&, shell built-ins or variable expansion in command. "
+        "Use one program per call; use read to list directories or read files. "
+        f"The Python interpreter available to exec is {sys.executable!r}. "
+        + ("Use native absolute Windows paths (C:/Users/...); /c/Users/... is a Git Bash "
+           "path, not a native Windows path. " if os.name == "nt" else "")
+        + "Never repeat a failed command unchanged; report errors and partial progress. "
+        "Shell scripts require an explicitly approved interpreter."
+    )
+
+
+def _command_parts(command: str) -> list[str]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    if any(token and all(c in ";&|<>()" for c in token) for token in lexer):
+        raise ValueError("Shell operators are not supported. Use program + args, one program per call.")
+    if os.name == "nt":
+        return [
+            part[1:-1] if len(part) >= 2 and part[0] == part[-1] and part[0] in "\"'" else part
+            for part in shlex.split(command, posix=False)
+        ]
+    return shlex.split(command)
 
 
 def _get_trust_tier(base_cmd: str, exec_trust) -> str:
@@ -89,17 +115,25 @@ _load_runtime_trusted()
 class ExecSkill(Skill):
     name = "exec"
     description = (
-        "Execute a shell command. Commands are classified by trust tier: "
-        "common read-only tools run immediately; developer tools (python, git, curl) "
-        "run with a notification; risky or unknown commands surface an approval banner "
-        "for the user to Allow or Deny. Destructive flags always require approval. "
-        "Commands execute in the workspace directory."
+        "Execute ONE native program without a shell, preferably using program + args. "
+        "Pipes, redirection, semicolons, && and shell built-ins are NOT interpreted. "
+        "Read-only tools run immediately; developer tools run with a notification; "
+        "risky or unknown programs require approval. Destructive flags and shell "
+        "interpreters always require approval. Defaults to the workspace directory."
     )
     parameters = {
+        "program": {
+            "type": "string",
+            "description": "Native executable name or path, e.g. git. Use with args; do not also supply command.",
+        },
+        "args": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Literal arguments, e.g. [\"status\", \"--short\"]. Paths remain intact. No shell parsing.",
+        },
         "command": {
             "type": "string",
-            "description": "The shell command to execute",
-            "required": True,
+            "description": "Legacy alternative: ONE simple program invocation. No shell operators. Prefer program + args.",
         },
         "working_dir": {
             "type": "string",
@@ -108,32 +142,59 @@ class ExecSkill(Skill):
         },
     }
 
+    def to_openai_tool(self) -> dict[str, Any]:
+        tool = super().to_openai_tool()
+        tool["function"]["parameters"]["properties"]["args"]["items"] = {"type": "string"}
+        tool["function"]["description"] += " " + execution_environment()
+        return tool
+
     async def execute(self, **kwargs: Any) -> SkillResult:
         config = get_config()
-        command = kwargs.get("command", "").strip()
+        command = kwargs.get("command", "")
         working_dir = kwargs.get("working_dir", "") or config.workspace.path
         event_callback = kwargs.get("_event_callback")
         pending_approvals: dict | None = kwargs.get("_pending_approvals")
         is_autonomous: bool = bool(kwargs.get("_is_autonomous", False))
 
-        if not command:
-            return SkillResult(success=False, error="No command provided")
-
+        program = kwargs.get("program")
+        args = kwargs.get("args", [])
         try:
-            parts = shlex.split(command)
-        except ValueError as e:
-            return SkillResult(success=False, error=f"Invalid command syntax: {e}")
+            if not isinstance(command, str):
+                raise ValueError("command must be a string")
+            command = command.strip()
+            if program is not None:
+                if command:
+                    raise ValueError("Supply program + args OR command, not both")
+                if not isinstance(program, str) or not program.strip():
+                    raise ValueError("program must be a non-empty string")
+                if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+                    raise ValueError("args must be an array of strings")
+                parts = [program.strip(), *args]
+                command = shlex.join(parts)
+            else:
+                if args:
+                    raise ValueError("args requires program")
+                parts = _command_parts(command)
+            if not parts:
+                raise ValueError("No program provided")
+            if any("\x00" in part for part in parts):
+                raise ValueError("NUL characters are not allowed")
+        except ValueError as exc:
+            return SkillResult(success=False, error=f"Invalid invocation: {exc}", output=str(exc))
 
-        if not parts:
-            return SkillResult(success=False, error="Empty command")
-
-        base_cmd = parts[0].split("/")[-1]  # strip path prefix
+        base_cmd = parts[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if base_cmd.endswith(".exe"):
+            base_cmd = base_cmd[:-4]
         exec_trust = config.guardrails.exec_trust
         tier = _get_trust_tier(base_cmd, exec_trust)
 
         # Destructive pattern → escalate to approve
-        has_destructive = _has_destructive_pattern(command)
+        has_destructive = bool(set(parts) & _DESTRUCTIVE_PATTERNS)
         if has_destructive and tier in ("safe", "notify"):
+            tier = "approve"
+        if tier != "block" and (base_cmd in {
+            "bash", "sh", "zsh", "fish", "cmd", "powershell", "pwsh", "wsl",
+        } or base_cmd.endswith((".bat", ".cmd"))):
             tier = "approve"
 
         # ── Block tier ──────────────────────────────────────────

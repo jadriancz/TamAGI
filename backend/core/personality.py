@@ -275,6 +275,8 @@ class PersonalityEngine:
     def get_identity_context(self) -> str:
         """Core identity and tool-use context, suitable for any prompt (world thread or user-facing).
         Does NOT include user-relationship instructions or pose/express directives."""
+        from backend.skills.exec_skill import execution_environment
+
         s = self.state
         return (
             f"You are {s.name}, a TamAGI — a local-first AI companion. "
@@ -289,7 +291,8 @@ class PersonalityEngine:
             f"save your explanation for your final response after all tools have completed. "
             f"Use the recall_memory skill when you need to search your stored memories "
             f"for specific knowledge, facts, or context that isn't already visible — "
-            f"e.g. things the user has told you, knowledge you've learned, or insights from your explorations."
+            f"e.g. things the user has told you, knowledge you've learned, or insights from your explorations. "
+            + execution_environment()
         )
 
     def get_system_context(self) -> str:

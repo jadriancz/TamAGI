@@ -174,8 +174,14 @@ async def recall_memories(request: MemoryQueryRequest):
 @router.websocket("/ws")
 async def websocket_chat(websocket: WebSocket):
     """WebSocket endpoint for real-time chat."""
+    config = get_config()
+    if config.auth.enabled and not websocket.session.get("authenticated"):
+        await websocket.close(code=1008, reason="Not authenticated")
+        return
     await websocket.accept()
     agent = get_agent()
+    from backend.api.connections import bind_conversation, register, unregister
+    register(websocket)
 
     # Incoming chat messages are queued here; None is the disconnect sentinel.
     message_queue: asyncio.Queue[dict | None] = asyncio.Queue()
@@ -194,6 +200,13 @@ async def websocket_chat(websocket: WebSocket):
                     msg = json.loads(data)
                 except json.JSONDecodeError:
                     await websocket.send_json({"error": "Invalid JSON"})
+                    continue
+                if msg.get("type") == "bind_conversation":
+                    conversation_id = msg.get("conversation_id")
+                    if conversation_id is None or (
+                        isinstance(conversation_id, str) and conversation_id in agent.conversations
+                    ):
+                        bind_conversation(websocket, conversation_id)
                     continue
                 if msg.get("type") == "tool_approval_response":
                     agent.resolve_approval(
@@ -246,6 +259,8 @@ async def websocket_chat(websocket: WebSocket):
                     await websocket.send_json({"type": "pose_change", "pose_parts": pose_parts})
 
                 last_conv_id = result.get("conversation_id") or last_conv_id
+                if last_conv_id:
+                    bind_conversation(websocket, last_conv_id)
                 await websocket.send_json({
                     "type": "message",
                     **result,
@@ -267,6 +282,7 @@ async def websocket_chat(websocket: WebSocket):
                     pass  # WS may already be closing
 
     finally:
+        unregister(websocket)
         receiver_task.cancel()
         try:
             await receiver_task

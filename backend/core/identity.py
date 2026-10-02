@@ -445,7 +445,7 @@ class IdentityManager:
                 result[key] = val
         return result
 
-    def get_system_prompt_context(self) -> str:
+    def get_system_prompt_context(self, autonomous: bool = False) -> str:
         """
         Build system prompt context from identity files.
         This is injected before every LLM call.
@@ -474,12 +474,16 @@ class IdentityManager:
             sections.append(f"## About Your User\n{self._read_core_file(self.user_path)}")
 
         # Task board — injected on every turn so the LLM always knows current work state
+        task_instruction = (
+            "During autonomous ticks, continue one safe step on existing work; record progress or a concrete blocker."
+            if autonomous else "At the start of each conversation, review the board and briefly acknowledge any in-progress work."
+        )
         if self.tasks_path.exists():
             tasks_content = self.tasks_path.read_text()
             sections.append(
                 f"## Your Task Board\n{tasks_content}\n"
                 f"**Working with your task board:**\n"
-                f"- At the start of each conversation, review the board and briefly acknowledge any in-progress work.\n"
+                f"- {task_instruction}\n"
                 f"- When you begin working on something: `task(action=\"start\", item=\"...\")`\n"
                 f"- When you finish something: `task(action=\"complete\", item=\"...\")`\n"
                 f"- When the user gives you something new to do: `task(action=\"add\", text=\"...\")`\n"
@@ -494,6 +498,9 @@ class IdentityManager:
                 "`task(action=\"add\", text=\"...\")` — no setup needed.\n"
                 "Only add tasks when there is real work to track across conversations."
             )
+
+        if autonomous:
+            return "\n\n".join(sections)
 
         cap = self.file_char_limit
         sections.append(

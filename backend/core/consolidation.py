@@ -182,11 +182,17 @@ class ConsolidationEngine:
 
     # ── Gathering ─────────────────────────────────────────────
 
+    def _new_experiences(self, since_ts: float) -> list[dict]:
+        from backend.core.autonomous_experience import select_experiences
+
+        if self.monologue_log is None:
+            return []
+        return select_experiences(
+            self.monologue_log.recent(limit=5000, source="autonomous", type="action_completed"), since_ts
+        )
+
     def _count_new_ticks(self, since_ts: float) -> int:
-        return sum(
-            1 for e in self.monologue_log.recent(limit=5000, source="autonomous", type="action_completed")
-            if float(e.get("timestamp", 0.0)) > since_ts
-        ) if self.monologue_log is not None else 0
+        return len(self._new_experiences(since_ts))
 
     def _gather_lived_experience(self, since_ts: float) -> tuple[str, float, int]:
         """Build a compact digest of autonomous ticks newer than `since_ts`.
@@ -195,10 +201,7 @@ class ConsolidationEngine:
         """
         if self.monologue_log is None:
             return "", since_ts, 0
-        events = [
-            e for e in self.monologue_log.recent(limit=5000, source="autonomous", type="action_completed")
-            if float(e.get("timestamp", 0.0)) > since_ts
-        ]
+        events = self._new_experiences(since_ts)
         if not events:
             return "", since_ts, 0
         new_count = len(events)
@@ -213,7 +216,14 @@ class ConsolidationEngine:
             mood = (meta.get("mood") or "").strip().splitlines()[0][:80] if meta.get("mood") else ""
             arc_lines.append(f"- {when}: {loc or 'somewhere'} | {mood or '—'}")
 
-        texture = [c[:600] for c in (((e.get("content") or "").strip()) for e in capped[-3:]) if c]
+        texture = []
+        for event in capped[-3:]:
+            content = (event.get("content") or "").strip()[:600]
+            results = (event.get("metadata") or {}).get("tool_results", [])
+            if results and "[Verified tool results" not in content:
+                content += "\nTool evidence (success, errors and outputs):\n" + json.dumps(results, ensure_ascii=False)
+            if content:
+                texture.append(content)
 
         parts = ["Recent arc (when: location | mood):", "\n".join(arc_lines)]
         if texture:
@@ -295,6 +305,9 @@ class ConsolidationEngine:
             "toward the garden when something is unresolved\" — not \"I value reflection.\"\n"
             "- Stay grounded in your established world and genre. Do not introduce cosmic, surreal, or "
             "horror imagery unless it was already clearly part of who you are.\n"
+            "- Routine waiting or repeated rest is not a new trait or evidence of growth. "
+            "Do not reinforce claims that the runtime cannot act between conversations. "
+            "Tool attempts are not achievements: ground skill claims in successful results.\n"
             "- Change is gradual. A single consolidation reflects a little growth, not a new person.\n\n"
             "Return EXACTLY this structure and nothing else:\n\n"
             "===SOUL===\n"

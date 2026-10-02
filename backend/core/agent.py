@@ -189,6 +189,20 @@ class TamAGIAgent:
         """Wire up the world thread for world state injection and conversation hooks."""
         self._world_thread = world_thread
 
+    def add_proactive_message(self, conversation_id: str, content: str) -> bool:
+        """Persist an autonomous assistant message in an existing conversation."""
+        conv = self.conversations.get(conversation_id)
+        if conv is None:
+            return False
+        conv.messages.append(Message(
+            role="assistant",
+            content=content,
+            metadata={"proactive": True},
+        ))
+        conv.updated_at = time.time()
+        self._save_conversation(conv)
+        return True
+
     # ── Durable pending-conv queue ────────────────────────────
 
     @property
@@ -556,13 +570,13 @@ class TamAGIAgent:
         if memory_ctx:
             system_prompt += memory_ctx
 
-        # For new conversations: pause the world thread (visitor is here) and inject
-        # an arrival framing so the TamAGI knows they're being visited at their location.
-        if is_new_conv and self._world_thread:
+        # Keep autonomous ticks out of the way while a visitor is chatting.
+        if self._world_thread:
             self._world_thread.pause_for_conversation()
-            arrival_ctx = self._get_arrival_context(user_message)
-            if arrival_ctx:
-                system_prompt += arrival_ctx
+            if is_new_conv:
+                arrival_ctx = self._get_arrival_context(user_message)
+                if arrival_ctx:
+                    system_prompt += arrival_ctx
 
         # Inject self-model context: world graph summary for world-awareness.
         if self.self_model:
@@ -709,6 +723,7 @@ class TamAGIAgent:
             except Exception as exc:
                 logger.warning("PlanExecutor failed, falling back to LLM loop: %s", exc)
 
+        hit_round_limit = True
         for round_num in range(round_limit):
             try:
                 response = await self.llm.chat_with_retry(
@@ -751,6 +766,7 @@ class TamAGIAgent:
                 response.tool_calls = parse_text_tool_calls(response.content)
 
             if not response.tool_calls:
+                hit_round_limit = False
                 break
 
             # If the LLM included content alongside its tool calls, capture it.
@@ -867,13 +883,53 @@ class TamAGIAgent:
                     break  # break inner tool-call loop
 
             if direct_response_text is not None:
+                hit_round_limit = False
                 break  # break outer round loop
 
         # 6. Extract final response
-        # last_tool_round_content catches the case where the LLM wrote its
-        # complete answer alongside a tool call (common pattern) and then
-        # returned empty content in the follow-up round after tools finished.
-        final_text = direct_response_text or llm_error or response.content or last_tool_round_content or "..."
+        # If the tool budget ran out before the model wrote any prose, ask once
+        # more for a summary with tools disabled. Without this the turn silently
+        # ended as "..." with no explanation to the user.
+        if (
+            hit_round_limit
+            and not direct_response_text
+            and not llm_error
+            and not (response.content and response.content.strip())
+            and not last_tool_round_content
+        ):
+            logger.warning(
+                "Tool-round budget exhausted (%d) with no final text — requesting summary.",
+                round_limit,
+            )
+            try:
+                summary_msgs = llm_messages + [LLMMessage(
+                    "user",
+                    "You have used your tool budget for this turn. Do not call any more "
+                    "tools. Reply now with a concise summary of what you found and did, "
+                    "in first person, for the user.",
+                )]
+                summary_resp = await self.llm.chat(summary_msgs, tools=None)
+                if summary_resp.content and summary_resp.content.strip():
+                    final_text = summary_resp.content.strip()
+                    if event_callback:
+                        await event_callback({"type": "interim_text", "content": final_text})
+                else:
+                    final_text = (
+                        "I looked into that but ran out of tool steps before I could "
+                        "finish. Here's where I got to — ask me to continue and I'll pick "
+                        "it up from there."
+                    )
+            except Exception as exc:
+                logger.warning("Post-budget summary request failed: %s", exc)
+                final_text = (
+                    "I ran out of tool steps while working on that. Ask me to continue "
+                    "and I'll resume."
+                )
+        else:
+            final_text = direct_response_text or llm_error or response.content or last_tool_round_content or (
+                "I ran out of tool steps while working on that. Ask me to continue "
+                "and I'll resume."
+            )
 
         # 6b. Brain: reflection, capability nudging, periodic self-model save
         elapsed = time.time() - _start

@@ -59,7 +59,9 @@ class MemoryConfig(BaseModel):
     chromadb: ChromaDBConfig = Field(default_factory=ChromaDBConfig)
     elasticsearch: ElasticsearchConfig = Field(default_factory=ElasticsearchConfig)
     retrieval_limit: int = 5
-    relevance_threshold: float = 0.5
+    # 0.5 filters out everything with the default MiniLM embedding (typical
+    # related-text distances are 0.55-0.7); 0.30 admits real matches.
+    relevance_threshold: float = 0.30
 
 
 class ExecTrustConfig(BaseModel):
