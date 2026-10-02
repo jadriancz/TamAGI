@@ -89,6 +89,12 @@ def parse_text_tool_calls(content: str) -> list:
     return tool_calls
 
 
+def _visible_reply(content: str | None) -> str:
+    """Reasoning markup is never a user-facing conclusion, even if unclosed."""
+    text = re.sub(r"<think\b[^>]*>.*?(?:</think\s*>|$)", "", content or "", flags=re.I | re.S).strip()
+    return "" if text in {"...", "…"} else text
+
+
 @dataclass
 class Message:
     role: str
@@ -690,7 +696,6 @@ class TamAGIAgent:
         thinking_blocks: list[str] = []
         llm_error: str | None = None
         direct_response_text: str | None = None
-        last_tool_round_content: str | None = None  # fallback if final round is silent
         response = LLMResponse()  # safe default; overwritten on first successful LLM call
         # Per-turn call counts for once-per-response skills (thinking models loop on these).
         _ONCE_PER_TURN_SKILLS = {"express"}
@@ -769,19 +774,13 @@ class TamAGIAgent:
                 hit_round_limit = False
                 break
 
-            # If the LLM included content alongside its tool calls, capture it.
-            # This serves two purposes:
-            # 1. Surface it as reasoning so the user can follow along.
-            # 2. Save it as a fallback — the LLM sometimes generates its
-            #    complete "done" response here and then returns empty content
-            #    in the follow-up round once the tools have run.
             if response.content and response.content.strip():
-                last_tool_round_content = response.content.strip()
-                interim_messages.append(last_tool_round_content)
+                interim_text = response.content.strip()
+                interim_messages.append(interim_text)
                 if event_callback:
                     await event_callback({
                         "type": "interim_text",
-                        "content": last_tool_round_content,
+                        "content": interim_text,
                     })
 
             # The assistant message for this round is appended ONCE before the
@@ -886,50 +885,35 @@ class TamAGIAgent:
                 hit_round_limit = False
                 break  # break outer round loop
 
-        # 6. Extract final response
-        # If the tool budget ran out before the model wrote any prose, ask once
-        # more for a summary with tools disabled. Without this the turn silently
-        # ended as "..." with no explanation to the user.
-        if (
-            hit_round_limit
-            and not direct_response_text
-            and not llm_error
-            and not (response.content and response.content.strip())
-            and not last_tool_round_content
-        ):
+        # Tool-round commentary is not a conclusion after the final tool result.
+        final_text = _visible_reply(direct_response_text) or llm_error or (
+            _visible_reply(response.content) if not hit_round_limit else ""
+        )
+        if not final_text:
             logger.warning(
-                "Tool-round budget exhausted (%d) with no final text — requesting summary.",
-                round_limit,
+                "Final answer required (tool rounds=%d, budget exhausted=%s) — requesting summary.",
+                round_limit, hit_round_limit,
             )
             try:
                 summary_msgs = llm_messages + [LLMMessage(
                     "user",
-                    "You have used your tool budget for this turn. Do not call any more "
-                    "tools. Reply now with a concise summary of what you found and did, "
-                    "in first person, for the user.",
+                    "This turn must now end with a user-facing conclusion. Do not call more "
+                    "tools or provide only a thinking block or progress announcement. "
+                    "In the user's language, summarize verified findings, failed attempts, "
+                    "limitations and what remains pending. Do not claim that work will "
+                    "continue in the background unless a running job was actually created.",
                 )]
                 summary_resp = await self.llm.chat(summary_msgs, tools=None)
-                if summary_resp.content and summary_resp.content.strip():
-                    final_text = summary_resp.content.strip()
-                    if event_callback:
-                        await event_callback({"type": "interim_text", "content": final_text})
-                else:
-                    final_text = (
-                        "I looked into that but ran out of tool steps before I could "
-                        "finish. Here's where I got to — ask me to continue and I'll pick "
-                        "it up from there."
-                    )
+                if not summary_resp.tool_calls and not parse_text_tool_calls(summary_resp.content):
+                    final_text = _visible_reply(summary_resp.content)
             except Exception as exc:
-                logger.warning("Post-budget summary request failed: %s", exc)
+                logger.warning("Final summary request failed: %s", exc)
+            if not final_text:
                 final_text = (
-                    "I ran out of tool steps while working on that. Ask me to continue "
-                    "and I'll resume."
+                    "Este turno terminó, pero no pude generar una conclusión válida de los "
+                    "resultados. La investigación no se puede considerar completada. "
+                    "Los pasos mostrados no significan que siga trabajando en segundo plano."
                 )
-        else:
-            final_text = direct_response_text or llm_error or response.content or last_tool_round_content or (
-                "I ran out of tool steps while working on that. Ask me to continue "
-                "and I'll resume."
-            )
 
         # 6b. Brain: reflection, capability nudging, periodic self-model save
         elapsed = time.time() - _start
