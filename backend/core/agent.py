@@ -95,6 +95,27 @@ def _visible_reply(content: str | None) -> str:
     return "" if text in {"...", "…"} else text
 
 
+# Some providers reject the whole request by body size (~5 MB for the current
+# one), so a single unbounded tool output — e.g. an exec listing a huge tree —
+# can 413 every following round. Clamp every tool result at this chokepoint.
+_TOOL_RESULT_MAX_CHARS = 30_000
+_TOOL_RESULT_HARD_CAP = 100_000
+
+
+def _clamp_tool_payload(payload: dict) -> dict:
+    """Bound oversized string fields in a tool payload, keeping head and tail."""
+    clamped = dict(payload)
+    for key, value in clamped.items():
+        if isinstance(value, str) and len(value) > _TOOL_RESULT_MAX_CHARS:
+            keep = _TOOL_RESULT_MAX_CHARS // 2
+            clamped[key] = (
+                value[:keep]
+                + f"\n\n[...truncated: {len(value):,} chars total — re-run with narrower arguments if you need the middle...]\n\n"
+                + value[-keep:]
+            )
+    return clamped
+
+
 @dataclass
 class Message:
     role: str
@@ -869,9 +890,19 @@ class TamAGIAgent:
                 # tool_call_id must match the id in the preceding assistant message's
                 # tool_calls array — required by the OpenAI spec and llama.cpp's
                 # chat template (raises "tool_call_id must be provided!" otherwise).
+                tool_payload = result.to_dict() if hasattr(result, "to_dict") else result
+                if isinstance(tool_payload, dict):
+                    tool_payload = _clamp_tool_payload(tool_payload)
+                tool_json = json.dumps(tool_payload)
+                if len(tool_json) > _TOOL_RESULT_HARD_CAP:
+                    # Safety net for huge nested structures (e.g. a giant `data` dict).
+                    tool_json = (
+                        tool_json[:_TOOL_RESULT_HARD_CAP]
+                        + f"\n[...payload capped at {_TOOL_RESULT_HARD_CAP:,} chars]"
+                    )
                 llm_messages.append(LLMMessage(
                     "tool",
-                    json.dumps(result.to_dict() if hasattr(result, "to_dict") else result),
+                    tool_json,
                     tool_call_id=tc.id,
                 ))
 

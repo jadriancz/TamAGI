@@ -219,7 +219,9 @@ class LLMClient:
 
         # Parse tool calls if present
         tool_calls: list[ToolCall] = []
-        raw_tool_calls = message.get("tool_calls", [])
+        # Some OpenAI-compatible backends return "tool_calls": null explicitly,
+        # so .get's default is not enough — coerce None to [].
+        raw_tool_calls = message.get("tool_calls") or []
         for tc in raw_tool_calls:
             func = tc.get("function", {})
             raw_args = func.get("arguments", {})

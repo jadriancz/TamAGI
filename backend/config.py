@@ -128,7 +128,7 @@ class AutonomyConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    max_tool_rounds: int = 5           # Fallback round limit for unplanned tasks
+    max_tool_rounds: int = 10          # Fallback round limit for unplanned tasks
     max_tool_rounds_ceiling: int = 20  # Hard cap when plan drives the limit
     use_plan_executor: bool = False    # Step through ActionPlan via PlanExecutor
     llm_retry_attempts: int = 1        # Retries on RemoteProtocolError / ConnectError
