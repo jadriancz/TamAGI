@@ -4,7 +4,7 @@ Self-Model API — read-only endpoints for inspecting TamAGI's world graph.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from backend.api.chat import get_agent
 
@@ -45,6 +45,16 @@ async def get_self_model_graph():
     if sm is None:
         raise HTTPException(status_code=503, detail="Self-model not initialized")
     return sm.snapshot()
+
+
+@router.get("/events")
+async def get_self_model_events(limit: int = Query(default=50, ge=1, le=500)):
+    """Recent self-model mutations (append-only event journal), newest first."""
+    agent = get_agent()
+    sm = agent.self_model
+    if sm is None:
+        raise HTTPException(status_code=503, detail="Self-model not initialized")
+    return {"events": sm.load_event_log(limit=limit)}
 
 
 @router.get("/node/{node_id}")

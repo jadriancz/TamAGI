@@ -1193,7 +1193,7 @@ class TamAGIAgent:
             self.self_model._apply_add_node("event", {
                 "id": evt_id,
                 "description": f"Visitor said: {user_message[:180]}",
-            })
+            }, actor="chat")
             self.self_model.auto_wire_node(evt_id)
             logger.debug("Recorded conversation event: %s", evt_id)
         except Exception as exc:
@@ -1327,14 +1327,14 @@ class TamAGIAgent:
         try:
             self.self_model._apply_update_node(
                 goal_id, {"status": status, "progress": progress}
-            )
+            , actor="chat")
             self.self_model.save()
         except Exception as exc:
             try:
                 self.self_model._apply_update_node(
                     goal_id,
                     {"status": node.get("status", "active"), "progress": node.get("progress", "")},
-                )
+                 actor="chat")
             except Exception:
                 pass
             logger.warning("Could not persist transient goal status for %s: %s", goal_id, exc)
@@ -1353,7 +1353,7 @@ class TamAGIAgent:
                 "title": user_message[:60],
                 "description": user_message[:200],
                 "status": "active",
-            })
+            }, actor="chat")
             self.self_model.auto_wire_node(quest_id)
             self.self_model.save()
             return quest_id
@@ -1385,7 +1385,7 @@ class TamAGIAgent:
             if not updates:
                 continue
             try:
-                self.self_model._apply_update_node(proposal.target, updates)
+                self.self_model._apply_update_node(proposal.target, updates, actor="chat")
                 node = self.self_model.get_node(proposal.target)
                 mutations.append({
                     "op": "update",
@@ -1437,7 +1437,7 @@ class TamAGIAgent:
             if age_days < 7:
                 continue
             try:
-                self.self_model._apply_remove_node(quest.id)
+                self.self_model._apply_remove_node(quest.id, actor="chat")
                 pruned += 1
             except Exception:
                 pass
@@ -1472,7 +1472,7 @@ class TamAGIAgent:
                         f"({skill.usage_count} uses, {skill.success_count} successes)"
                     ),
                     "source_event_id": skill.id,
-                })
+                }, actor="chat")
                 self.self_model.auto_wire_node(perk_id)
                 mutations.append({
                     "op": "milestone",
@@ -1523,7 +1523,7 @@ class TamAGIAgent:
                     "proficiency": "novice",
                     "usage_count": 1,
                     "success_count": 1,
-                })
+                }, actor="chat")
                 self.self_model.auto_wire_node(skill_id)
                 logger.info("Discovered skill: %s", skill_id)
                 return {"op": "discover", "node_type": "skill", "id": skill_id, "description": label}
@@ -1548,7 +1548,7 @@ class TamAGIAgent:
                 "usage_count":   new_usage,
                 "success_count": new_success,
                 "proficiency":   new_prof,
-            })
+            }, actor="chat")
             return {
                 "op": "nudge",
                 "node_type": "skill",

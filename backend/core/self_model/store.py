@@ -45,6 +45,20 @@ from .schemas import (
 logger = logging.getLogger("tamagi.self_model")
 
 
+def _compact(detail: dict, max_str: int = 200) -> dict:
+    """Truncate long strings so journal lines stay readable in a text editor."""
+    out = {}
+    for k, v in detail.items():
+        if isinstance(v, str) and len(v) > max_str:
+            out[k] = v[:max_str] + "…"
+        elif isinstance(v, dict):
+            out[k] = {k2: (v2[:max_str] + "…" if isinstance(v2, str) and len(v2) > max_str else v2)
+                      for k2, v2 in v.items()}
+        else:
+            out[k] = v
+    return out
+
+
 # ── ModificationProposal (kept for call-site compat) ──────────
 
 @dataclass(frozen=True)
@@ -65,7 +79,50 @@ class SelfModel:
     def __init__(self, data_path: str | Path = "data/self_model.json") -> None:
         self._graph = nx.DiGraph()
         self._data_path = Path(data_path)
+        # Append-only mutation journal (JSONL, one line per successful
+        # _apply_*). The snapshot file says what Tama's world IS; this says
+        # how it got that way — who changed what, when. Never load-bearing:
+        # journal failures are logged, never raised.
+        self._journal_path = self._data_path.with_name("selfmodel_events.jsonl")
         logger.info("Self-Model Store initialized.")
+
+    # ── Mutation journal ────────────────────────────────────────
+
+    def _journal(self, op: str, target: str, detail: dict, actor: str) -> None:
+        try:
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "op": op,
+                "target": target,
+                "actor": actor or "unknown",
+                "detail": _compact(detail),
+            }
+            self._journal_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._journal_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            logger.debug("Self-model journal write failed (op=%s)", op, exc_info=True)
+
+    def load_event_log(self, limit: int = 50) -> list[dict]:
+        """Most recent journal entries, newest first. Empty when no journal."""
+        if not self._journal_path.exists():
+            return []
+        try:
+            lines = self._journal_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        events = []
+        for line in reversed(lines[-limit * 4:]):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # tolerate a torn last line after a crash
+            if len(events) >= limit:
+                break
+        return events
 
     # ══════════════════════════════════════════════════════════
     # Public Query API
@@ -221,7 +278,7 @@ class SelfModel:
             edge_type = _FWD.get((node_type, rtype))
             if edge_type and not self._graph.has_edge(node_id, rid):
                 try:
-                    self._apply_add_edge(node_id, rid, edge_type)
+                    self._apply_add_edge(node_id, rid, edge_type, actor='auto_wire')
                     edges_created += 1
                 except (KeyError, ValueError):
                     pass
@@ -229,7 +286,7 @@ class SelfModel:
                 edge_type = _REV.get((rtype, node_type))
                 if edge_type and not self._graph.has_edge(rid, node_id):
                     try:
-                        self._apply_add_edge(rid, node_id, edge_type)
+                        self._apply_add_edge(rid, node_id, edge_type, actor='auto_wire')
                         edges_created += 1
                     except (KeyError, ValueError):
                         pass
@@ -347,7 +404,7 @@ class SelfModel:
     # Internal Mutation API
     # ══════════════════════════════════════════════════════════
 
-    def _apply_add_node(self, node_type: str, attributes: dict) -> str:
+    def _apply_add_node(self, node_type: str, attributes: dict, actor: str = "") -> str:
         if node_type not in NODE_TYPE_MAP:
             raise ValueError(f"Unknown node_type: {node_type!r}")
         node_id = attributes.get("id")
@@ -359,26 +416,35 @@ class SelfModel:
         typed_node = node_from_dict(full_attrs)
         self._graph.add_node(node_id, **typed_node.to_dict())
         logger.debug("Added node %s (type=%s)", node_id, node_type)
+        self._journal("add_node", node_id,
+                      {"node_type": node_type, **typed_node.to_dict()}, actor)
         return node_id
 
-    def _apply_update_node(self, node_id: str, updates: dict) -> None:
+    def _apply_update_node(self, node_id: str, updates: dict, actor: str = "") -> None:
         if node_id not in self._graph:
             raise KeyError(f"Node {node_id!r} does not exist.")
+        before = {}
+        applied = {}
         for key, value in updates.items():
             if key in ("id", "node_type"):
                 continue
+            before[key] = self._graph.nodes[node_id].get(key)
             self._graph.nodes[node_id][key] = value
+            applied[key] = value
         logger.debug("Updated node %s: %s", node_id, list(updates.keys()))
+        self._journal("update_node", node_id, {"before": before, "after": applied}, actor)
 
-    def _apply_remove_node(self, node_id: str) -> dict:
+    def _apply_remove_node(self, node_id: str, actor: str = "") -> dict:
         if node_id not in self._graph:
             raise KeyError(f"Node {node_id!r} does not exist.")
         attrs = dict(self._graph.nodes[node_id])
         self._graph.remove_node(node_id)
         logger.debug("Removed node %s", node_id)
+        self._journal("remove_node", node_id, attrs, actor)
         return attrs
 
-    def _apply_add_edge(self, source: str, target: str, edge_type: str, extra_attrs: dict | None = None) -> None:
+    def _apply_add_edge(self, source: str, target: str, edge_type: str,
+                        extra_attrs: dict | None = None, actor: str = "") -> None:
         if source not in self._graph:
             raise KeyError(f"Source node {source!r} does not exist.")
         if target not in self._graph:
@@ -393,13 +459,16 @@ class SelfModel:
             edge_attrs.update(extra_attrs)
         self._graph.add_edge(source, target, **edge_attrs)
         logger.debug("Added edge %s -[%s]-> %s", source, edge_type, target)
+        self._journal("add_edge", f"{source}->{target}",
+                      {"source": source, "target": target, "edge_type": edge_type}, actor)
 
-    def _apply_remove_edge(self, source: str, target: str) -> dict:
+    def _apply_remove_edge(self, source: str, target: str, actor: str = "") -> dict:
         if not self._graph.has_edge(source, target):
             raise KeyError(f"Edge {source!r} → {target!r} does not exist.")
         attrs = dict(self._graph.edges[source, target])
         self._graph.remove_edge(source, target)
         logger.debug("Removed edge %s -> %s", source, target)
+        self._journal("remove_edge", f"{source}->{target}", attrs, actor)
         return attrs
 
     # ══════════════════════════════════════════════════════════

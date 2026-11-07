@@ -143,7 +143,7 @@ def _seed_world_graph(agent: Any, world_setting: str, world_state: "WorldState")
             "id": lore_id,
             "description": lore_desc,
             "context": "world_genre",
-        })
+        }, actor="onboarding")
         logger.info("World graph seeded: LoreNode %s %r", lore_id, lore_desc[:60])
 
         # LocationNode — starting location from the generated world state
@@ -154,12 +154,12 @@ def _seed_world_graph(agent: Any, world_setting: str, world_state: "WorldState")
                 "name": world_state.location,
                 "description": world_state.location,
                 "atmosphere": world_state.mood or "",
-            })
+            }, actor="onboarding")
             logger.info("World graph seeded: LocationNode %s %r", loc_id, world_state.location[:60])
 
         # Edge: lore → location (the world setting gives rise to the starting place)
         if lore_id and loc_id:
-            sm._apply_add_edge(lore_id, loc_id, EdgeType.RELATES_TO.value)
+            sm._apply_add_edge(lore_id, loc_id, EdgeType.RELATES_TO.value, actor="onboarding")
 
         if lore_id or loc_id:
             sm.save()

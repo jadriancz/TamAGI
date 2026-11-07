@@ -412,6 +412,13 @@ class IdentityManager:
         if self.onboarding_state_path.exists():
             self.onboarding_state_path.unlink()
 
+        # First identity snapshot — version 0 of who she chose to be.
+        from backend.core.file_versioning import version_files
+        version_files(
+            [self.identity_path, self.soul_path, self.user_path],
+            "onboarding: identity created",
+        )
+
         logger.info(f"Onboarding complete! {name} ({emoji}) the {creature} is born.")
 
         return {
@@ -574,6 +581,12 @@ class IdentityManager:
                 lines[i] = f"- **{field.title()}**: {value}"
                 break
         self.identity_path.write_text("\n".join(lines))
+        self._version_identity_files("identity field: " + field)
+
+    def _version_identity_files(self, reason: str) -> None:
+        """Best-effort snapshot into the shadow history repo (never raises)."""
+        from backend.core.file_versioning import version_files
+        version_files([self.identity_path, self.soul_path, self.user_path], reason)
 
     def update_user_field(self, field: str, value: str) -> None:
         """Update a single field in USER.md."""
@@ -592,3 +605,4 @@ class IdentityManager:
                 lines[i] = f"- **{target}**: {value}"
                 break
         self.user_path.write_text("\n".join(lines))
+        self._version_identity_files("user field: " + field)

@@ -136,7 +136,7 @@ class WriteWorldGraphSkill(Skill):
 
     def _try_add_edge(self, sm, source_id: str, target_id: str, edge_type: str) -> bool:
         try:
-            sm._apply_add_edge(source_id, target_id, edge_type)
+            sm._apply_add_edge(source_id, target_id, edge_type, actor="skill:write_world_graph")
             return True
         except Exception:
             logger.warning(
@@ -210,7 +210,7 @@ class WriteWorldGraphSkill(Skill):
             if attrs:
                 update_attrs = {k: v for k, v in attrs.items() if k != "id"}
                 if update_attrs:
-                    sm._apply_update_node(existing_id, update_attrs)
+                    sm._apply_update_node(existing_id, update_attrs, actor="skill:write_world_graph")
 
             # Still honour explicit relationships on the re-encountered node
             explicit_edges = 0
@@ -251,7 +251,7 @@ class WriteWorldGraphSkill(Skill):
         node_id = attrs["id"]
 
         try:
-            sm._apply_add_node(node_type, attrs)
+            sm._apply_add_node(node_type, attrs, actor="skill:write_world_graph")
         except ValueError as exc:
             if "already exists" in str(exc):
                 return SkillResult(
@@ -319,7 +319,7 @@ class WriteWorldGraphSkill(Skill):
             return SkillResult(success=False, error="No attributes to update", output="Provide attributes to change.")
 
         try:
-            sm._apply_update_node(node_id, attrs)
+            sm._apply_update_node(node_id, attrs, actor="skill:write_world_graph")
         except Exception as exc:
             return SkillResult(success=False, error=str(exc), output=str(exc))
 
@@ -366,7 +366,7 @@ class WriteWorldGraphSkill(Skill):
             return SkillResult(success=False, error=f"Target {target_id!r} not found", output=f"No node {target_id!r}.")
 
         try:
-            sm._apply_add_edge(source_id, target_id, edge_type)
+            sm._apply_add_edge(source_id, target_id, edge_type, actor="skill:write_world_graph")
         except Exception as exc:
             return SkillResult(success=False, error=str(exc), output=str(exc))
         failure = self._save_failure(sm, f"Added edge {source_id} -[{edge_type}]-> {target_id}")

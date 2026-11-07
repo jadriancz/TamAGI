@@ -44,6 +44,36 @@ import re
 
 logger = logging.getLogger("tamagi.world_thread")
 
+# Conversation events queued for the next tick. Drained at tick start and
+# re-queued (front, oldest dropped past the cap) if the tick fails — losing
+# them meant the tick literally forgot the user had just visited.
+_MAX_PENDING_EVENTS = 50
+
+# Stagnation pressure: consecutive idle ticks after which the next prompt is
+# given an escalating nudge to move something real. 2 = gentle, 5 = pointed.
+_IDLE_PRESSURE_SOFT = 2
+_IDLE_PRESSURE_HARD = 5
+
+
+def _stagnation_note(streak: int) -> str:
+    """Prompt pressure for N consecutive idle ticks. Pure — easy to test."""
+    if streak < _IDLE_PRESSURE_SOFT:
+        return ""
+    if streak < _IDLE_PRESSURE_HARD:
+        return (
+            f"\n\n[World pressure] You have idled {streak} cycles in a row and "
+            "nothing in your world changed. Pick ONE concrete open item (task "
+            "board or active quest) and take one small verifiable step this "
+            "tick — or state the exact blocker in one sentence."
+        )
+    return (
+        f"\n\n[World pressure] {streak} consecutive idle cycles. Your world is "
+        "going stale and repetitive rest is not the same as calm. This tick you "
+        "MUST touch something real: advance or prune a quest, make progress on "
+        "a task, or — only if nothing is open — start the smallest interesting "
+        "quest yourself and take its first step. Then report what changed."
+    )
+
 
 def _norm_location(s: str) -> str:
     """Normalise a location name for fuzzy matching against graph nodes."""
@@ -238,6 +268,53 @@ class WorldThread:
         self._broadcaster = None  # set via set_broadcaster() from main.py
         self._last_proactive_ts: float = 0.0
 
+        # Stagnation counter — survives restarts; a long offline period with
+        # no activity shouldn't reset the pressure to zero.
+        self._stagnation_path = Path(config.state_path).with_name("world_stagnation.json")
+        self._stagnation_streak = self._load_stagnation()
+
+    def _load_stagnation(self) -> int:
+        try:
+            if self._stagnation_path.exists():
+                data = json.loads(self._stagnation_path.read_text(encoding="utf-8"))
+                return max(0, int(data.get("idle_streak", 0)))
+        except Exception:
+            logger.debug("Could not load stagnation counter", exc_info=True)
+        return 0
+
+    def _update_stagnation(self, kind: str) -> int:
+        """Idle ticks accumulate pressure; work/events/blocked resets it.
+        (blocked counts as movement — trying and failing is not idling.)"""
+        self._stagnation_streak = (
+            min(self._stagnation_streak + 1, 99) if kind == "idle" else 0
+        )
+        try:
+            self._stagnation_path.parent.mkdir(parents=True, exist_ok=True)
+            self._stagnation_path.write_text(
+                json.dumps({
+                    "idle_streak": self._stagnation_streak,
+                    "last_kind": kind,
+                    "updated": time.time(),
+                }),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("Could not persist stagnation counter", exc_info=True)
+        return self._stagnation_streak
+
+    def _requeue_events(self, events: list[str]) -> None:
+        """Put drained events back at the FRONT (chronological order kept),
+        dropping the oldest past the cap so a long LLM outage can't grow
+        the queue without bound."""
+        if not events:
+            return
+        merged = events + self._pending_world_events
+        if len(merged) > _MAX_PENDING_EVENTS:
+            dropped = len(merged) - _MAX_PENDING_EVENTS
+            merged = merged[-_MAX_PENDING_EVENTS:]
+            logger.warning("Pending world events at cap — dropped %d oldest.", dropped)
+        self._pending_world_events = merged
+
     # ── Lifecycle ─────────────────────────────────────────────
 
     def start(self) -> None:
@@ -318,6 +395,8 @@ class WorldThread:
     def inject_world_event(self, event_text: str) -> None:
         """Queue a world event to be appended to the next tick's prompt."""
         self._pending_world_events.append(event_text)
+        if len(self._pending_world_events) > _MAX_PENDING_EVENTS:
+            self._pending_world_events = self._pending_world_events[-_MAX_PENDING_EVENTS:]
         logger.info(
             "World event queued (%d total): %r...",
             len(self._pending_world_events), event_text[:80],
@@ -576,6 +655,7 @@ class WorldThread:
 
         self._tick_running = True
         tick_start = time.time()
+        pending_events: list[str] = []  # filled once drained; may be re-queued on failure
 
         try:
             current_state = self._state_store.load()
@@ -641,6 +721,13 @@ class WorldThread:
             if previous_work:
                 user_content += "\n\n" + previous_work
 
+            # Anti-stagnation: escalating pressure after consecutive idle ticks.
+            pressure = _stagnation_note(self._stagnation_streak)
+            if pressure:
+                user_content += pressure
+                logger.info("World tick: injecting stagnation pressure (streak=%d).",
+                            self._stagnation_streak)
+
             tool_results = []
             tool_arguments = {}
 
@@ -701,7 +788,7 @@ class WorldThread:
                     _loc_norm = _norm_location(new_state.location)
                     for loc in sm.get_locations():
                         if _norm_location(loc.name) == _loc_norm:
-                            sm._apply_update_node(loc.id, {"last_visited": new_state.timestamp})
+                            sm._apply_update_node(loc.id, {"last_visited": new_state.timestamp}, actor="world_tick")
                             try:
                                 sm.save()
                             except Exception:
@@ -718,8 +805,10 @@ class WorldThread:
             else:
                 logger.warning(
                     "World tick: original and repair responses lacked a valid [New State]; "
-                    "world_state.json unchanged."
+                    "world_state.json unchanged. Re-queueing %d pending event(s).",
+                    len(pending_events),
                 )
+                self._requeue_events(pending_events)
                 return None
 
             quests_after = {
@@ -742,6 +831,9 @@ class WorldThread:
                 bool(self._last_sm_mutations) or tasks_before != self._pending_task_context(),
                 bool(pending_events),
             )
+
+            # Feed the anti-stagnation counter with how this tick felt.
+            self._update_stagnation(experience["experience_kind"])
 
             # Log to monologue
             if self.monologue_log is not None:
@@ -781,6 +873,9 @@ class WorldThread:
 
         except Exception as exc:
             logger.error("World tick failed: %s", exc, exc_info=True)
+            # The drained conversation events must survive a failed tick —
+            # otherwise the model forgets the user was ever here.
+            self._requeue_events(pending_events)
             return None
         finally:
             self._tick_running = False

@@ -152,6 +152,15 @@ class ConsolidationEngine:
 
         changed = soul_written or identity_written
 
+        # Version the soul before anything else touches it — every autonomous
+        # rewrite becomes diffable and revertible (data/identity_history/).
+        if changed:
+            from backend.core.file_versioning import version_files
+            version_files(
+                [p for p in (soul_path, identity_path) if p.exists()],
+                "consolidation: soul/identity rewrite",
+            )
+
         # We processed this material (the LLM responded): advance the marker so we
         # don't reconsolidate the same ticks even if a rewrite was rejected.
         self._save_marker({
@@ -534,6 +543,13 @@ class RelationalConsolidator:
             supp_written = True
             logger.info("Relational consolidation: %s updated (%d → %d chars).",
                         supp_name, len(current_supp), len(new_supp))
+
+        if user_written or supp_written:
+            from backend.core.file_versioning import version_files
+            version_files(
+                [p for p in (user_path, supp_path) if p.exists()],
+                "consolidation: relational/user rewrite",
+            )
 
         self._ended_since_run = 0  # processed this batch — reset cadence
 
