@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -269,8 +270,13 @@ class PersonalityEngine:
     def save_state(self) -> None:
         path = Path(self.STATE_FILE)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        # Atomic write: a crash mid-write used to corrupt the state file, and
+        # load_state's except-swallow would then silently reset ALL of Tama's
+        # stats to defaults on next boot. Temp + os.replace makes it all-or-nothing.
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(asdict(self.state), f, indent=2)
+        os.replace(tmp, path)
 
     def get_identity_context(self) -> str:
         """Core identity and tool-use context, suitable for any prompt (world thread or user-facing).

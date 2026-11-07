@@ -47,7 +47,11 @@ async def run_tool_loop(
         - skills_used: ordered list of skill names that were called
     """
     # Import here to avoid circular import — agent.py also imports tool_loop
-    from backend.core.agent import parse_text_tool_calls
+    from backend.core.agent import (
+        _TOOL_RESULT_HARD_CAP,
+        _clamp_tool_payload,
+        parse_text_tool_calls,
+    )
 
     tools = skills.get_openai_tools() if skills.skill_count > 0 else None
     pending = pending_approvals or {}
@@ -120,11 +124,20 @@ async def run_tool_loop(
                 except Exception:
                     pass
 
-            messages.append(LLMMessage(
-                "tool",
-                json.dumps(result.to_dict() if hasattr(result, "to_dict") else {"output": str(result)}),
-                tool_call_id=tc.id,
-            ))
+            # Same guards as agent.chat()'s interactive loop: clamp oversized
+            # string fields and hard-cap the serialized payload. Without this,
+            # one huge exec/read result inside an autonomous tick bloats the
+            # context and 413s the following round.
+            tool_payload = result.to_dict() if hasattr(result, "to_dict") else {"output": str(result)}
+            if isinstance(tool_payload, dict):
+                tool_payload = _clamp_tool_payload(tool_payload)
+            tool_json = json.dumps(tool_payload)
+            if len(tool_json) > _TOOL_RESULT_HARD_CAP:
+                tool_json = (
+                    tool_json[:_TOOL_RESULT_HARD_CAP]
+                    + f"\n[...payload capped at {_TOOL_RESULT_HARD_CAP:,} chars]"
+                )
+            messages.append(LLMMessage("tool", tool_json, tool_call_id=tc.id))
 
     else:
         try:

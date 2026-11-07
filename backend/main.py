@@ -6,6 +6,7 @@ Initializes all subsystems and starts the FastAPI server.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -78,6 +79,26 @@ BANNER = r"""
 
 
 # ── Application Lifecycle ─────────────────────────────────────
+
+async def _vitality_drift_loop(personality) -> None:
+    """Periodically apply time-based stat drift while the server runs.
+
+    personality.state.decay() was previously called only once at startup —
+    despite its own docstring saying "call periodically" — so vitality and
+    curiosity stayed frozen for the entire process lifetime and only moved
+    across restarts. A 10-minute cadence is invisible per tick (drift is at
+    most 15 pts/hour toward the time-of-day target) but keeps mood and pose
+    honest between conversations.
+    """
+    while True:
+        await asyncio.sleep(600)
+        try:
+            personality.state.decay()
+            personality.state.check_low_vitality()
+            personality.save_state()
+        except Exception:
+            logger.warning("vitality drift tick failed", exc_info=True)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -315,6 +336,8 @@ async def lifespan(app: FastAPI):
     world_thread.start()
     logger.info("World thread started — Living World is active")
 
+    drift_task = asyncio.create_task(_vitality_drift_loop(personality))
+
     logger.info(f"═══ TamAGI is awake! ═══")
     logger.info(f"    Open http://localhost:{config.server.port} in your browser")
 
@@ -322,6 +345,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info(f"═══ {config.tamagi.name} is going to sleep... ═══")
+    drift_task.cancel()
     await world_thread.stop()
     personality.save_state()
     self_model.save()

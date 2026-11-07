@@ -19,6 +19,16 @@ logger = logging.getLogger("tamagi.api.chat")
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
+# Serializes chat() process-wide. agent.chat() mutates shared state
+# (conversation message buffers, personality, memory, _pending_conv_ids,
+# history files) with no internal locking, and REST + WebSocket clients can
+# otherwise run it concurrently on the same conversation — racing on
+# conv.messages and clobbering the same history file mid-save. TamAGI is
+# single-user, so full serialization is both the simplest and the correct fix.
+# WS tool-approval frames are handled by the receiver task WITHOUT this lock,
+# so pending approvals still resolve while a chat holds it (no deadlock).
+_CHAT_LOCK = asyncio.Lock()
+
 
 # ── Request/Response Models ───────────────────────────────────
 
@@ -69,12 +79,13 @@ def get_agent():
 async def chat(request: ChatRequest):
     """Send a message to TamAGI and get a response."""
     agent = get_agent()
-    result = await agent.chat(
-        user_message=request.message,
-        conversation_id=request.conversation_id,
-        image_data=request.image_data,
-        image_media_type=request.image_media_type,
-    )
+    async with _CHAT_LOCK:
+        result = await agent.chat(
+            user_message=request.message,
+            conversation_id=request.conversation_id,
+            image_data=request.image_data,
+            image_media_type=request.image_media_type,
+        )
     return ChatResponse(**result)
 
 
@@ -88,21 +99,33 @@ async def upload_file(
     workspace = Path(config.workspace.path).resolve()
     dest_dir = (workspace / subdirectory).resolve()
 
-    if not str(dest_dir).startswith(str(workspace)):
+    if dest_dir != workspace and not dest_dir.is_relative_to(workspace):
         raise HTTPException(status_code=400, detail="Invalid subdirectory")
 
+    # Sanitize the client-supplied filename: keep only the last path component,
+    # so a name like "../../config.yaml" cannot escape the workspace. Also
+    # rejects empty filenames (which previously raised a 500 on None).
+    safe_name = Path(file.filename or "").name
+    if not safe_name or safe_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
     dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reject oversized uploads up front when the client declared a size,
+    # instead of buffering the whole body first.
+    if file.size and file.size > config.guardrails.max_write_size:
+        raise HTTPException(status_code=413, detail="File too large")
     content = await file.read()
 
     if len(content) > config.guardrails.max_write_size:
         raise HTTPException(status_code=413, detail="File too large")
 
-    dest = dest_dir / file.filename
+    dest = dest_dir / safe_name
     dest.write_bytes(content)
 
     return {
         "path": str(dest.relative_to(workspace)),
-        "filename": file.filename,
+        "filename": safe_name,
         "size": len(content),
         "media_type": file.content_type,
     }
@@ -244,13 +267,14 @@ async def websocket_chat(websocket: WebSocket):
                 await websocket.send_json(event)
 
             try:
-                result = await agent.chat(
-                    user_message=user_message,
-                    conversation_id=conv_id,
-                    event_callback=send_event,
-                    image_data=msg.get("image_data"),
-                    image_media_type=msg.get("image_media_type", "image/jpeg"),
-                )
+                async with _CHAT_LOCK:
+                    result = await agent.chat(
+                        user_message=user_message,
+                        conversation_id=conv_id,
+                        event_callback=send_event,
+                        image_data=msg.get("image_data"),
+                        image_media_type=msg.get("image_media_type", "image/jpeg"),
+                    )
 
                 # Fire a pose_change event immediately so the sprite animates
                 # reactively on the LLM's chosen pose before the full message lands.

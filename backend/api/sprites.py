@@ -9,6 +9,7 @@ PNGs live at data/sprites/ and are served as statics at /sprites/.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
@@ -29,6 +30,19 @@ _ALLOWED_PARTS = {
     "foot_left", "foot_right",
     "accessory",
 }
+
+# variant arrives unsanitized from the URL and is interpolated into the
+# filename; without this, "{part}_{variant}" with variant="../../x" escapes
+# data/sprites/. part is already whitelisted via _ALLOWED_PARTS.
+_VARIANT_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def _validate_variant(variant: str) -> str:
+    if not _VARIANT_RE.fullmatch(variant):
+        raise HTTPException(
+            400, "Invalid variant — use 1-40 letters, digits, '-' or '_'"
+        )
+    return variant
 
 
 @router.get("/config")
@@ -59,6 +73,7 @@ async def upload_sprite(part: str, variant: str, file: UploadFile = File(...)):
     """
     if part not in _ALLOWED_PARTS:
         raise HTTPException(400, f"Unknown part '{part}'. Valid parts: {sorted(_ALLOWED_PARTS)}")
+    _validate_variant(variant)
     if not (file.filename or "").lower().endswith(".png"):
         raise HTTPException(400, "Only PNG files are accepted")
 
@@ -71,6 +86,9 @@ async def upload_sprite(part: str, variant: str, file: UploadFile = File(...)):
 @router.delete("/upload/{part}/{variant}")
 async def delete_sprite(part: str, variant: str):
     """Remove a previously uploaded PNG, reverting that slot to the procedural placeholder."""
+    if part not in _ALLOWED_PARTS:
+        raise HTTPException(400, f"Unknown part '{part}'. Valid parts: {sorted(_ALLOWED_PARTS)}")
+    _validate_variant(variant)
     target = _SPRITES_DIR / f"{part}_{variant}.png"
     if not target.exists():
         raise HTTPException(404, "Sprite not found")

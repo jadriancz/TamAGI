@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 import re
@@ -1556,8 +1557,12 @@ class TamAGIAgent:
             return
         self._history_dir.mkdir(parents=True, exist_ok=True)
         path = self._history_dir / f"{conv.id}.json"
-        with open(path, "w") as f:
+        # Atomic write (temp + os.replace): a crash mid-write used to leave a
+        # truncated/corrupt history JSON. Same pattern as WorldStateStore.save().
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(conv.to_dict(), f, indent=2)
+        os.replace(tmp, path)
 
     def _load_conversations(self) -> None:
         if not self.config.history.persist:
