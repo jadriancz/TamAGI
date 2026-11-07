@@ -558,7 +558,17 @@ class TamAGIAgent:
                         key=lambda p: float(p[1].get("timestamp", 0)),
                         reverse=True,
                     )[:5]
-                    lines = [doc.strip()[:400] for doc, _ in pairs]
+                    # Date-prefix each memory so the model can tell what is
+                    # recent from what is stale and resolve contradictions.
+                    lines = []
+                    for doc, meta in pairs:
+                        try:
+                            stamp = datetime.fromtimestamp(
+                                float(meta.get("timestamp", 0))).strftime("%b %d")
+                        except (ValueError, OSError, OverflowError):
+                            stamp = ""
+                        text = doc.strip()[:400]
+                        lines.append(f"[{stamp}] {text}" if stamp else text)
                 else:
                     lines = []
                 if lines:

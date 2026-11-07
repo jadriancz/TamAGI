@@ -32,9 +32,11 @@ def _format_entry(entry: Any, index: int) -> str:
 
     relevance = f"{entry.relevance:.2f}" if entry.relevance else "—"
     data_type = entry.metadata.get("data_type") or entry.memory_type.value
+    importance = getattr(entry, "importance", None)
+    imp = f"{importance:.2f}" if importance is not None else "—"
 
     lines = [
-        f"[{index}] type={data_type}  relevance={relevance}  {ts}",
+        f"[{index}] type={data_type}  relevance={relevance}  importance={imp}  {ts}",
         f"    {entry.content[:300]}{'…' if len(entry.content) > 300 else ''}",
     ]
     return "\n".join(lines)
