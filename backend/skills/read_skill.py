@@ -87,14 +87,33 @@ class ReadSkill(Skill):
                 )
             return SkillResult(success=False, error=f"Not a readable file: {file_path}")
 
+        # Size guard (the guardrail this module always promised): a whole-file
+        # read of a huge file (logs, sqlite, hives) would load and decode the
+        # entire thing in memory. Page with max_lines instead — that path
+        # streams and never holds more than the requested head.
+        paged = bool(max_lines and max_lines > 0)
         try:
-            content = resolved.read_text(encoding=encoding)
+            size = resolved.stat().st_size
+        except OSError as e:
+            return SkillResult(success=False, error=f"Error reading file: {e}")
+        if not paged and size > config.guardrails.max_read_size:
+            max_mb = config.guardrails.max_read_size / (1024 * 1024)
+            return SkillResult(
+                success=False,
+                error=(
+                    f"File is {size / (1024 * 1024):.1f} MB, over the "
+                    f"{max_mb:.0f} MB read limit. Re-read with max_lines to "
+                    "page through it (or use exec for a targeted search)."
+                ),
+            )
 
-            if max_lines and max_lines > 0:
-                lines = content.splitlines()
-                if len(lines) > max_lines:
-                    content = "\n".join(lines[:max_lines])
-                    content += f"\n... ({len(lines) - max_lines} more lines)"
+        try:
+            if paged:
+                content, dropped = self._read_head(resolved, encoding, max_lines)
+                if dropped:
+                    content += f"... ({dropped} more lines)"
+            else:
+                content = resolved.read_text(encoding=encoding)
 
             return SkillResult(
                 success=True,
@@ -113,6 +132,20 @@ class ReadSkill(Skill):
             )
         except Exception as e:
             return SkillResult(success=False, error=f"Error reading file: {e}")
+
+    @staticmethod
+    def _read_head(path: Path, encoding: str, max_lines: int) -> tuple[str, int]:
+        """First `max_lines` lines of `path` streamed line-by-line, plus the
+        count of lines left out. Never materializes the whole file."""
+        kept: list[str] = []
+        dropped = 0
+        with path.open("r", encoding=encoding) as f:
+            for line in f:
+                if len(kept) < max_lines:
+                    kept.append(line)
+                else:
+                    dropped += 1
+        return "".join(kept), dropped
 
     def _resolve_path(self, file_path: str, workspace: str) -> Path:
         """Resolve a file path, treating relative paths as workspace-relative."""

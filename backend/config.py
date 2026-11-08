@@ -88,6 +88,9 @@ class GuardrailsConfig(BaseModel):
     allowed_write_paths: list[str] = Field(default_factory=lambda: ["./workspace"])
     exec_trust: ExecTrustConfig = Field(default_factory=ExecTrustConfig)
     max_write_size: int = 10485760  # 10MB
+    # Whole-file reads are capped at this size; larger files must be paged
+    # through max_lines (streamed, so the file is never slurped into memory).
+    max_read_size: int = 2097152  # 2MB
     exec_timeout: int = 30
 
 
