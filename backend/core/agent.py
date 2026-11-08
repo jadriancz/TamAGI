@@ -96,6 +96,22 @@ def _visible_reply(content: str | None) -> str:
     return "" if text in {"...", "…"} else text
 
 
+def _llm_status_error_message(status: int) -> str:
+    """Blame the right party: 5xx/429 is the provider failing, only other 4xx
+    plausibly mean our request (context) was malformed."""
+    if status == 429:
+        return "My model provider is rate-limiting me right now — try again in a minute."
+    if status >= 500:
+        return (
+            f"My model provider failed on their side (HTTP {status}) — your message "
+            "is fine, just try again in a moment."
+        )
+    return (
+        "I hit an error processing that request. The context may be too complex — "
+        "please try rephrasing or starting a new conversation."
+    )
+
+
 # Some providers reject the whole request by body size (~5 MB for the current
 # one), so a single unbounded tool output — e.g. an exec listing a huge tree —
 # can 413 every following round. Clamp every tool result at this chokepoint.
@@ -776,13 +792,14 @@ class TamAGIAgent:
                 llm_error = "I ran into a connection issue while working on your request. Please try again."
                 break
             except httpx.HTTPStatusError as e:
-                # The LLM backend returned a 4xx/5xx — often caused by a malformed
-                # context (e.g. oversized payload, bad tool-result structure).
-                # Log it and surface a graceful message rather than crashing.
-                logger.error(f"LLM returned HTTP {e.response.status_code} on round {round_num + 1}: {e.response.text[:300]}")
+                # The LLM backend returned a 4xx/5xx. Tell the user who's at
+                # fault: 5xx/429 is the provider (transient), other 4xx often
+                # means a malformed/oversized context on our side.
+                status = e.response.status_code
+                logger.error(f"LLM returned HTTP {status} on round {round_num + 1}: {e.response.text[:300]}")
                 if event_callback:
-                    await event_callback({"type": "error", "message": f"LLM error {e.response.status_code}"})
-                llm_error = "I hit an error processing that request. The context may be too complex — please try rephrasing or starting a new conversation."
+                    await event_callback({"type": "error", "message": f"LLM error {status}"})
+                llm_error = _llm_status_error_message(status)
                 break
 
             # Emit native thinking blocks if the model produced them (e.g. DeepSeek R1,
