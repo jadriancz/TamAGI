@@ -501,6 +501,10 @@ class TamAGIAgent:
         # If the LLM includes [ACTION:xxx] in its response it will set a new pose below.
         self.personality.state.current_pose = "idle"
 
+        # Capture when the user was last seen BEFORE interact() overwrites it,
+        # so the briefing block knows which autonomous ticks happened while
+        # they were away.
+        _prev_interaction = self.personality.state.last_interaction
         self.personality.state.interact()
 
         if self.personality.state.check_low_vitality():
@@ -600,6 +604,28 @@ class TamAGIAgent:
             except Exception as exc:
                 logger.warning("Memory injection failed (new conversation): %s", exc)
 
+        # Briefing: what the world thread actually did while the user was
+        # away. Same new-conversation-only rule as memory injection — existing
+        # chats already carry the thread. Nothing to report => no block.
+        briefing_ctx = ""
+        if is_new_conv:
+            try:
+                from backend.core.briefing import BriefingStore, render_for_prompt
+                cutoff = float(_prev_interaction or 0.0)
+                if self._world_thread:
+                    # Read through the thread so we hit the exact store it writes.
+                    briefings = self._world_thread.briefings_since(cutoff)
+                else:
+                    briefings = BriefingStore().since(cutoff)
+                briefing_ctx = render_for_prompt(briefings)
+                if briefings:
+                    logger.info(
+                        "Injected briefing (%d ticks) into new conversation %s",
+                        len(briefings), conv.id,
+                    )
+            except Exception as exc:
+                logger.warning("Briefing injection failed (new conversation): %s", exc)
+
         # 2. Build messages for LLM
         # Layer: personality base + identity/soul context
         identity_context = self.identity.get_system_prompt_context()
@@ -623,6 +649,8 @@ class TamAGIAgent:
                 system_prompt += f"\n{ws_ctx}"
         if memory_ctx:
             system_prompt += memory_ctx
+        if briefing_ctx:
+            system_prompt += briefing_ctx
 
         # Keep autonomous ticks out of the way while a visitor is chatting.
         if self._world_thread:

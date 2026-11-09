@@ -283,6 +283,22 @@ class WorldThread:
         self._stagnation_path = Path(config.state_path).with_name("world_stagnation.json")
         self._stagnation_streak = self._load_stagnation()
 
+        # Briefings: one compact record per meaningful tick, so a returning
+        # user gets an honest "while you were away I…" instead of nothing.
+        from backend.core.briefing import BriefingStore
+        self._briefing_store = BriefingStore(
+            Path(config.state_path).with_name("briefings.jsonl")
+        )
+
+    def briefings_since(self, cutoff_ts: float, limit: int = 8) -> list[dict]:
+        """Briefings recorded after cutoff_ts (oldest→newest). Public accessor
+        so the agent reads the exact store this thread writes to."""
+        try:
+            return self._briefing_store.since(cutoff_ts, limit=limit)
+        except Exception:
+            logger.debug("Briefing read failed", exc_info=True)
+            return []
+
     def _load_stagnation(self) -> int:
         try:
             if self._stagnation_path.exists():
@@ -832,9 +848,10 @@ class WorldThread:
             ]
 
             from backend.core.autonomous_experience import experience_metadata
+            tasks_changed = tasks_before != self._pending_task_context()
             experience = experience_metadata(
                 response_text, tool_results,
-                bool(self._last_sm_mutations) or tasks_before != self._pending_task_context(),
+                bool(self._last_sm_mutations) or tasks_changed,
                 bool(pending_events),
             )
 
@@ -858,6 +875,27 @@ class WorldThread:
                         "duration_seconds": round(time.time() - tick_start, 1),
                     },
                 )
+
+            # Briefing: meaningful ticks get a compact, verifiable record the
+            # next new conversation can reference. Best-effort — never disturb
+            # the world loop.
+            try:
+                from backend.core.briefing import build_briefing
+                record = build_briefing(
+                    response_text,
+                    new_state.location,
+                    new_state.mood,
+                    new_state.focus,
+                    skills_used,
+                    tool_results,
+                    self._last_sm_mutations,
+                    tasks_changed,
+                    experience["experience_kind"],
+                )
+                if record is not None and self._briefing_store.append(record):
+                    logger.debug("Briefing recorded (%s)", record["kind"])
+            except Exception:
+                logger.debug("Briefing build failed", exc_info=True)
 
             # Sleep-time consolidation: distill accumulated lived experience into
             # identity once enough new ticks have accrued. Best-effort — a failure
