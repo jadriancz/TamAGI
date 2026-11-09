@@ -160,7 +160,9 @@ class LLMClient:
             logger.error(f"LLM HTTP error: {e.response.status_code} — {e.response.text}")
             raise
         except httpx.RequestError as e:
-            logger.error(f"LLM request error: {e}")
+            # httpx maps some timeouts with an empty message — include the
+            # class name so the log never reads "LLM request error: " again.
+            logger.error(f"LLM request error: {type(e).__name__}: {e}")
             raise
 
         return self._parse_response(data)
@@ -173,12 +175,17 @@ class LLMClient:
         delay: float = 2.0,
         **kwargs: Any,
     ) -> LLMResponse:
-        """chat() with automatic retry on server disconnect errors."""
+        """chat() with automatic retry on transport hiccups.
+
+        Includes TimeoutException on purpose: httpx's ConnectTimeout/ReadTimeout
+        subclass TimeoutException, NOT ConnectError — without it a 10 s connect
+        stall to a flaky provider failed the whole chat turn with zero retries.
+        """
         last_exc: Exception | None = None
         for i in range(attempts + 1):
             try:
                 return await self.chat(messages, tools=tools, **kwargs)
-            except (httpx.RemoteProtocolError, httpx.ConnectError) as e:
+            except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as e:
                 last_exc = e
                 if i < attempts:
                     logger.warning(f"LLM disconnected, retrying ({i + 1}/{attempts}): {e}")
