@@ -75,6 +75,16 @@ def _stagnation_note(streak: int) -> str:
     )
 
 
+def _in_active_hours(current_hour: int, start_h: int, end_h: int) -> bool:
+    """Active-hours gate on the hour-of-day. 0/24 means no gate; start>end
+    wraps past midnight (e.g. 22→6)."""
+    if start_h == 0 and end_h == 24:
+        return True
+    if start_h <= end_h:
+        return start_h <= current_hour < end_h
+    return current_hour >= start_h or current_hour < end_h
+
+
 def _norm_location(s: str) -> str:
     """Normalise a location name for fuzzy matching against graph nodes."""
     s = re.sub(r'\s*\([^)]+\)', '', s).lower().strip()
@@ -600,7 +610,10 @@ class WorldThread:
     async def _run_loop(self) -> None:
         try:
             while self._running:
-                now = datetime.now(timezone.utc)
+                # Anchor cron to LOCAL time, matching the active-hours gate
+                # (documented as "local time"). Anchoring to UTC made a pinned
+                # schedule like "0 9 * * *" fire at 9am UTC, not 9am local.
+                now = datetime.now().astimezone()
 
                 # Compute seconds until next cron firing
                 cron = croniter(self._schedule, now)
@@ -614,16 +627,9 @@ class WorldThread:
                     break
 
                 # Check active hours (0/24 = no gate)
-                start_h, end_h = self._active_hours
-                if not (start_h == 0 and end_h == 24):
-                    current_hour = datetime.now().hour
-                    if start_h <= end_h:
-                        in_hours = start_h <= current_hour < end_h
-                    else:
-                        in_hours = current_hour >= start_h or current_hour < end_h
-                    if not in_hours:
-                        logger.debug("World thread: outside active hours, skipping tick.")
-                        continue
+                if not _in_active_hours(datetime.now().hour, *self._active_hours):
+                    logger.debug("World thread: outside active hours, skipping tick.")
+                    continue
 
                 # Check decompression pause (post-conversation window)
                 if time.time() < self._paused_until:

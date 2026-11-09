@@ -11,8 +11,28 @@ from backend.core.world_thread import (
     _IDLE_PRESSURE_HARD,
     _IDLE_PRESSURE_SOFT,
     _MAX_PENDING_EVENTS,
+    _in_active_hours,
     _stagnation_note,
 )
+
+
+class ActiveHoursGateTests(unittest.TestCase):
+    def test_no_gate_when_0_24(self):
+        for h in (0, 3, 16, 23):
+            self.assertTrue(_in_active_hours(h, 0, 24))
+
+    def test_same_day_window(self):
+        self.assertTrue(_in_active_hours(9, 9, 18))
+        self.assertTrue(_in_active_hours(17, 9, 18))
+        self.assertFalse(_in_active_hours(8, 9, 18))
+        self.assertFalse(_in_active_hours(18, 9, 18))  # end exclusive
+
+    def test_midnight_wrap(self):
+        # 22:00 -> 06:00 overnight window
+        self.assertTrue(_in_active_hours(23, 22, 6))
+        self.assertTrue(_in_active_hours(2, 22, 6))
+        self.assertTrue(_in_active_hours(5, 22, 6))
+        self.assertFalse(_in_active_hours(12, 22, 6))
 
 
 def bare_thread(tmpdir: str) -> WorldThread:
@@ -23,6 +43,21 @@ def bare_thread(tmpdir: str) -> WorldThread:
     wt._stagnation_path = Path(tmpdir) / "world_stagnation.json"
     wt._stagnation_streak = 0
     return wt
+
+
+class CronLocalAnchorTests(unittest.TestCase):
+    """Regression: the run loop anchors cron to LOCAL time so a pinned
+    schedule ("0 9 * * *") fires at 9am wall-clock, not 9am UTC."""
+
+    def test_pinned_schedule_fires_at_local_wall_clock(self):
+        from datetime import datetime
+
+        from croniter import croniter
+
+        now = datetime.now().astimezone()
+        nxt = croniter("0 9 * * *", now).get_next(datetime)
+        self.assertEqual(nxt.hour, 9)
+        self.assertEqual(nxt.tzinfo.utcoffset(None), now.tzinfo.utcoffset(None))
 
 
 class StagnationNoteTests(unittest.TestCase):
