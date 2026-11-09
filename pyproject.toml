@@ -20,6 +20,9 @@ dependencies = [
     "jinja2>=3.1.4",
     "itsdangerous>=2.2.0",
     "croniter>=2.0",
+    # Web search default provider (requirements.txt had it; pyproject didn't,
+    # so uv-built venvs shipped without it and web_search silently failed).
+    "ddgs>=7.0.0",
 ]
 
 [project.scripts]
