@@ -19,6 +19,23 @@ from backend.config import LLMConfig
 
 logger = logging.getLogger("tamagi.llm")
 
+# Transient provider-side statuses worth a short queue-and-retry instead of
+# immediately failing the turn (the AMD free endpoint's 429 concurrency cap
+# typically frees up within seconds).
+_TRANSIENT_STATUSES = {429, 502, 503, 504}
+_MAX_RATE_RETRIES = 2
+_MAX_RETRY_WAIT = 30.0
+
+
+def _retry_wait_seconds(response: httpx.Response, attempt: int) -> float:
+    """How long to queue before the next attempt: honor Retry-After when the
+    provider sends a sane number, otherwise exponential 5s/10s backoff."""
+    raw = response.headers.get("Retry-After", "").strip()
+    try:
+        return min(float(raw), _MAX_RETRY_WAIT)
+    except ValueError:
+        return min(5.0 * (2 ** attempt), _MAX_RETRY_WAIT)
+
 
 class LLMMessage:
     """A single message in a conversation."""
@@ -152,18 +169,32 @@ class LLMClient:
 
         logger.info("LLM request → %s  model=%s  messages=%d", url, self.config.model, len(messages))
 
-        try:
-            resp = await self._client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"LLM HTTP error: {e.response.status_code} — {e.response.text}")
-            raise
-        except httpx.RequestError as e:
-            # httpx maps some timeouts with an empty message — include the
-            # class name so the log never reads "LLM request error: " again.
-            logger.error(f"LLM request error: {type(e).__name__}: {e}")
-            raise
+        # Queue briefly on transient statuses: on a shared endpoint a 429 is
+        # "all 128 slots are busy somewhere on earth", usually gone in seconds.
+        # Non-transient 4xx/5xx and transport errors propagate immediately
+        # (chat_with_retry / the agent's attribution handle those).
+        for attempt in range(_MAX_RATE_RETRIES + 1):
+            try:
+                resp = await self._client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                if status not in _TRANSIENT_STATUSES or attempt >= _MAX_RATE_RETRIES:
+                    logger.error(f"LLM HTTP error: {status} — {e.response.text}")
+                    raise
+                wait = _retry_wait_seconds(e.response, attempt)
+                logger.warning(
+                    "LLM HTTP %d (provider busy) — waiting %.0fs before retry %d/%d",
+                    status, wait, attempt + 1, _MAX_RATE_RETRIES,
+                )
+                await asyncio.sleep(wait)
+            except httpx.RequestError as e:
+                # httpx maps some timeouts with an empty message — include the
+                # class name so the log never reads "LLM request error: " again.
+                logger.error(f"LLM request error: {type(e).__name__}: {e}")
+                raise
 
         return self._parse_response(data)
 
