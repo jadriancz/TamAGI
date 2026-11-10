@@ -960,17 +960,20 @@ const API=window.location.origin;
 const WS_URL=API.replace(/^http/,'ws')+'/api/ws';
 let convId=localStorage.getItem('tamagi-active-conv')||null,loading=false;
 function rememberConv(id){if(id){localStorage.setItem('tamagi-active-conv',id)}else{localStorage.removeItem('tamagi-active-conv')}if(wsReady)ws.send(JSON.stringify({type:'bind_conversation',conversation_id:id||null}))}
-// Restore the last active conversation on page load so a reload/restart doesn't
-// silently start a blank chat (the bot would otherwise see no history).
+// Single-thread habit: opening the app ALWAYS continues a real conversation —
+// the saved one when valid, otherwise the most recently updated. A living
+// assistant's continuity lives in one thread; "+ New Conversation" remains in
+// the drawer as the deliberate escape hatch, not the default landing page.
 async function restoreLastConversation(){
   const saved=localStorage.getItem('tamagi-active-conv');
-  if(!saved)return;
   try{
     const d=await api('/conversations');
-    if((d.conversations||[]).some(c=>c.id===saved)){await openConversation(saved);return;}
+    const list=(d.conversations||[]).slice().sort((a,b)=>(b.updated_at||0)-(a.updated_at||0));
+    if(saved&&list.some(c=>c.id===saved)){await openConversation(saved);return;}
+    if(list.length){await openConversation(list[0].id);return;}
   }catch(e){console.error(e)}
-  // Stale id (history cleared server-side) — drop it and start fresh.
-  convId=null;rememberConv(null);
+  // Nothing to continue (fresh install or API down) — blank welcome is fine.
+  if(saved){convId=null;rememberConv(null);}
 }
 let ws=null,wsReady=false;
 let liveToolOutputs={};
