@@ -828,24 +828,26 @@
 <div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
 <aside class="drawer" id="drawer">
   <div class="drawer-header">
-    <h3 id="drawer-title">Conversations</h3>
+    <h3 id="drawer-title">Inner Monologue</h3>
     <button class="drawer-close" onclick="closeDrawer()">&times;</button>
   </div>
 
+  <!-- Single-thread direction: the drawer lands on her inner life, not the
+       chat switcher. Chats moved to last as the deliberate escape hatch. -->
   <div class="drawer-tabs">
-    <button class="drawer-tab active" id="tab-chats"     onclick="switchTab('chats')">Chats</button>
-    <button class="drawer-tab"        id="tab-mind"      onclick="switchTab('mind')">Mind</button>
+    <button class="drawer-tab active" id="tab-mind"      onclick="switchTab('mind')">Mind</button>
     <button class="drawer-tab"        id="tab-memories"  onclick="switchTab('memories')">Memories</button>
+    <button class="drawer-tab"        id="tab-chats"     onclick="switchTab('chats')">Chats</button>
   </div>
 
-  <!-- Chats panel (existing behavior) -->
-  <div class="drawer-panel" id="panel-chats">
+  <!-- Chats panel (escape hatch — hidden by default) -->
+  <div class="drawer-panel hidden" id="panel-chats">
     <div class="new-chat-btn" onclick="newConversation()">+ New Conversation</div>
     <div class="conv-list" id="conv-list"></div>
   </div>
 
   <!-- Mind panel — TamAGI's inner monologue: goals, actions, reflections -->
-  <div class="drawer-panel hidden" id="panel-mind">
+  <div class="drawer-panel" id="panel-mind">
     <div class="mind-panel-header">
       <div class="mind-status" id="mind-status-row"></div>
       <button class="dream-trigger-btn" id="dream-trigger-btn" onclick="triggerDream()">&#x25B6; Tick Now</button>
@@ -900,7 +902,7 @@
   <div class="avatar-panel">
     <div class="top-bar">
       <div style="display:flex;align-items:center;gap:7px">
-        <button class="btn-icon" onclick="openDrawer()" title="Conversations">&#9776;</button>
+        <button class="btn-icon" onclick="openDrawer()" title="Mind & memories">&#9776;</button>
         <div class="logo-small">TAMAGI<span>v0.1</span></div>
       </div>
       <div class="top-pills">
@@ -1606,7 +1608,7 @@ async function loadConversations(){try{const d=await api('/conversations');const
 async function openConversation(id){try{const d=await api(`/conversations/${id}`);convId=id;rememberConv(convId);const area=document.getElementById('chat-messages');area.innerHTML='';(d.messages||[]).forEach(m=>{const thinking=m.metadata?.thinking_blocks||[];const interim=m.metadata?.interim_messages||[];if(m.role==='assistant'&&(thinking.length||interim.length)){const hasThinking=thinking.length>0;const label=hasThinking?'Thinking':'Reasoning';const totalSteps=thinking.length+interim.length;const wrapper=document.createElement('div');wrapper.className='msg assistant';wrapper.innerHTML='<div class="interim-group collapsed" data-has-thinking="'+(hasThinking?'1':'0')+'" data-count="'+totalSteps+'"><button class="interim-toggle" onclick="toggleInterim(this)"><span class="interim-chevron">▶</span><span class="interim-label"><span class="interim-kind">'+label+'</span> · <span class="interim-count">'+totalSteps+(totalSteps===1?' step':' steps')+'</span></span></button><div class="interim-body">'+thinking.map(s=>'<div class="thinking-entry">'+renderMd(s)+'</div>').join('')+interim.map(s=>'<div class="interim-entry">'+renderMd(s)+'</div>').join('')+'</div></div>';area.appendChild(wrapper);}addMsg(m.role,m.content,m.metadata?.skills_used,m.timestamp,m.metadata?.context_compressed||0,m.metadata?.sm_mutations||[],!!m.metadata?.proactive);});loadConversations();closeDrawer()}catch(e){console.error(e)}}
 function newConversation(){convId=null;rememberConv(null);document.getElementById('chat-messages').innerHTML=`<div class="welcome-msg" id="welcome"><strong>New conversation!</strong><br>What shall we explore?</div>`;loadConversations();closeDrawer();document.getElementById('input').focus()}
 
-function openDrawer(){document.getElementById('drawer').classList.add('open');document.getElementById('drawer-overlay').classList.add('open');switchTab('chats');loadConversations()}
+function openDrawer(){document.getElementById('drawer').classList.add('open');document.getElementById('drawer-overlay').classList.add('open');switchTab('mind')}
 function closeDrawer(){document.getElementById('drawer').classList.remove('open');document.getElementById('drawer-overlay').classList.remove('open')}
 
 // ═══ MIND PANEL (merged dream log + inner monologue) ═══
@@ -1746,6 +1748,7 @@ function switchTab(name){
   const titles={chats:'Conversations',mind:'Inner Monologue',memories:'Memories'};
   document.getElementById('drawer-title').textContent=titles[name]||name;
   if(name==='mind')loadMindPanel();
+  if(name==='chats')loadConversations();
   if(name==='memories'){loadMemTotalCount();document.getElementById('mem-search').focus();}
 }
 
