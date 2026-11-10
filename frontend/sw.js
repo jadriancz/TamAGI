@@ -1,5 +1,8 @@
 // TamAGI Service Worker — PWA offline support
-const CACHE_NAME = 'tamagi-v1';
+// Bump this letter/number whenever the UI changes meaningfully: the sw.js
+// byte-diff triggers a reinstall and activate() purges the old cache, so
+// users get the new frontend instead of a stale one.
+const CACHE_NAME = 'tamagi-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -33,6 +36,22 @@ self.addEventListener('fetch', (event) => {
   // API calls: always network
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws')) {
     event.respondWith(fetch(event.request));
+    return;
+  }
+
+  // App shell: network-first. The server returns index.html for every SPA
+  // route, so cache-first would pin users to a stale UI through any number
+  // of deploys; only deep assets (images etc.) are safe cache-first.
+  if (url.pathname === '/' || url.pathname === '/index.html') {
+    event.respondWith(
+      fetch(event.request).then((response) => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      }).catch(() => caches.match(event.request))  // offline fallback
+    );
     return;
   }
 
