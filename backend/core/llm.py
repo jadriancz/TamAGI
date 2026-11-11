@@ -155,6 +155,11 @@ class LLMClient:
         if self.config.num_ctx is not None:
             payload["num_ctx"] = self.config.num_ctx
 
+        # Thinking models (GLM-5.3-Flash etc.): cap pre-answer reasoning so
+        # small max_tokens budgets don't burn 100% of the output on thought.
+        if self.config.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.config.reasoning_effort
+
         return payload
 
     async def chat(

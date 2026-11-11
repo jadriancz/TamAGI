@@ -21,6 +21,12 @@ class LLMConfig(BaseModel):
     # Has no effect on llama.cpp or other backends — for those, set --ctx-size
     # at server startup. Leave as None to use Ollama's compiled default.
     num_ctx: int | None = None
+    # For thinking-capable models (e.g. GLM-5.3-Flash on the Radeon endpoint):
+    # caps how much of the output budget the model spends "thinking" before
+    # answering. Without it, a small max_tokens budget can consume 100% of its
+    # output on reasoning and return empty content. Leave None to let the
+    # provider pick its default.
+    reasoning_effort: str | None = None
 
 
 class TamagiIdentity(BaseModel):
