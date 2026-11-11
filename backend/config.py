@@ -140,8 +140,15 @@ class AgentConfig(BaseModel):
     max_tool_rounds: int = 10          # Fallback round limit for unplanned tasks
     max_tool_rounds_ceiling: int = 20  # Hard cap when plan drives the limit
     use_plan_executor: bool = False    # Step through ActionPlan via PlanExecutor
-    llm_retry_attempts: int = 1        # Retries on RemoteProtocolError / ConnectError
-    llm_retry_delay: float = 2.0       # Seconds between retries
+    # Retries on RemoteProtocolError / ConnectError / TimeoutException.
+    # Sized for flaky client networks, not just provider hiccups: a
+    # ConnectTimeout burns a 10 s window, and a dropping router often
+    # recovers in ~30 s — one retry at 2 s gave up long before that
+    # (verified live 2026-11-11: chat + all search engines failing during
+    # a local net blip, then 200s seconds later). 2 retries x 5 s covers it
+    # while costing nothing on a healthy connection.
+    llm_retry_attempts: int = 2
+    llm_retry_delay: float = 5.0       # Seconds between retries
     qa_enabled: bool = True            # Enable Q&A belief pipeline (clarification gate)
     qa_entropy_threshold: float = 0.7  # Uncertainty entropy above this triggers clarification
 
