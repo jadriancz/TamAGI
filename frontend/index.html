@@ -360,8 +360,9 @@
     }
     .msg .time { font-size: 9px; color: var(--text-muted); margin-top: 3px; padding: 0 4px; }
     .msg.user .time { text-align: right; }
-    .skill-tag { display: inline-block; padding: 1px 5px; background: var(--bg-elevated); border-radius: 3px; font-size: 8px; color: var(--accent-tertiary); margin-left: 3px; }
-    .skill-tag.running { color: var(--text-muted); animation: tag-pulse 1s ease-in-out infinite; }
+    .skill-tag { display: inline-block; padding: 2px 8px; background: var(--bg-elevated); border-radius: 4px; font-size: 10px; color: var(--accent-tertiary); margin-left: 4px; font-weight: 500; border: 1px solid var(--border-bright); }
+    .skill-tag.running { color: var(--accent); animation: tag-pulse 1s ease-in-out infinite; }
+    .skill-tag.running::after { content: ' ↗'; font-size: 12px; opacity: 0.7; }
     .skill-tag[title] { cursor: help; border-bottom: 1px dotted var(--accent-tertiary); }
     .compact-tag { display: inline-block; padding: 1px 5px; background: var(--bg-elevated); border-radius: 3px; font-size: 8px; color: var(--warning); margin-left: 3px; cursor: help; border-bottom: 1px dotted var(--warning); opacity: 0.7; }
     .sm-tag { display: inline-block; padding: 1px 5px; background: var(--bg-elevated); border-radius: 3px; font-size: 8px; margin-left: 3px; opacity: 0.75; }

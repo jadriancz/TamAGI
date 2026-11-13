@@ -2,7 +2,7 @@
 // Bump this letter/number whenever the UI changes meaningfully: the sw.js
 // byte-diff triggers a reinstall and activate() purges the old cache, so
 // users get the new frontend instead of a stale one.
-const CACHE_NAME = 'tamagi-v2';
+const CACHE_NAME = 'tamagi-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
