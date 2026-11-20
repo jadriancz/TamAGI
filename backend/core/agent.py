@@ -753,18 +753,26 @@ class TamAGIAgent:
                         f"({chars_removed} chars) to memory store"
                     )
 
-        # If compression ran, prepend a brief system note so the model knows the
-        # context window was trimmed and earlier content is still in memory.
+        # If compression ran, fold a brief note into the system prompt so the
+        # model knows the context window was trimmed. It MUST be merged into
+        # the single leading system message, not appended as a second one:
+        # llama.cpp/LM Studio Jinja templates raise
+        # "System message must be at the beginning" for system at index > 0.
         if archived_count:
-            llm_messages.append(LLMMessage(
+            llm_messages[0] = LLMMessage(
                 "system",
-                f"[Note: {archived_count} earlier messages from this conversation "
-                f"were archived to long-term memory to fit the context window. "
-                f"They remain searchable via memory recall.]",
-            ))
+                llm_messages[0].content + (
+                    f"\n\n[Note: {archived_count} earlier messages from this "
+                    f"conversation were archived to long-term memory to fit the "
+                    f"context window. They remain searchable via memory recall.]"
+                ),
+            )
 
         for msg in history_messages:
-            llm_messages.append(LLMMessage(msg.role, msg.content))
+            # Defensive: some templates (llama.cpp) only tolerate system at
+            # index 0 — demote any stray system-role history message to user.
+            role = msg.role if msg.role in ("user", "assistant") else "user"
+            llm_messages.append(LLMMessage(role, msg.content))
         # Append current user message with image block if provided
         llm_messages.append(LLMMessage("user", user_llm_content))
 
