@@ -62,17 +62,49 @@ def _dream_time_label(iso_ts: str) -> str:
 def parse_text_tool_calls(content: str) -> list:
     """
     Parse tool calls that appear as plain text in LLM response.
-    Handles format: toolname[ARGS]{...json...}
+    Handles two formats:
+      1. toolname[ARGS]{...json...}
+      2. <function=name><parameter=key>value</parameter>...</function>
+         (chat-template markup leaked as text by small GGUFs via llama.cpp,
+         e.g. Qwen3.5-9B on LM Studio without native tool-call support)
     Returns list of objects with 'name' and 'arguments' attributes.
     """
     if not content:
         return []
 
-    # Pattern: word[ARGS]{json}
+    tool_calls = []
+
+    # Format 2 first: <function=name>...<parameter=key>value</parameter>...</function>
+    fn_pattern = re.compile(
+        r"<function=([\w.-]+)>(.*?)</function>", re.S
+    )
+    param_pattern = re.compile(r"<parameter=([\w.-]+)>\s*(.*?)\s*</parameter>", re.S)
+    for fn_match in fn_pattern.finditer(content):
+        tool_name, body = fn_match.group(1), fn_match.group(2)
+        args: dict[str, Any] = {}
+        for p_match in param_pattern.finditer(body):
+            key, raw = p_match.group(1), p_match.group(2).strip()
+            # Values arrive as strings; coerce JSON-looking ones so numeric/
+            # boolean/array parameters keep their type.
+            try:
+                args[key] = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                args[key] = raw
+        tc = type('ToolCall', (), {
+            'id': f"call_{uuid.uuid4().hex[:8]}",
+            'name': tool_name,
+            'arguments': args
+        })()
+        tool_calls.append(tc)
+        logger.info(f"Parsed markup text tool call: {tool_name} {list(args)}")
+
+    if tool_calls:
+        return tool_calls
+
+    # Format 1: word[ARGS]{json}
     pattern = r'(\w+)\[ARGS\](\{[^}]*\})'
     matches = re.findall(pattern, content)
 
-    tool_calls = []
     for tool_name, args_str in matches:
         try:
             args = json.loads(args_str)
@@ -846,6 +878,13 @@ class TamAGIAgent:
             # Try to parse text tool calls if structured ones are missing
             if not response.has_tool_calls and response.content:
                 response.tool_calls = parse_text_tool_calls(response.content)
+                if response.tool_calls:
+                    # The markup IS the tool call, not prose — strip it so it
+                    # never reaches the user as visible text.
+                    response.content = re.sub(
+                        r"<function=[\w.-]+>.*?</function>", "",
+                        response.content, flags=re.S,
+                    ).strip()
 
             if not response.tool_calls:
                 hit_round_limit = False
