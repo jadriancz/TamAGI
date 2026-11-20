@@ -1599,9 +1599,11 @@ function addMsg(role,content,skills=[],ts=null,compressed=0,smMuts=[],proactive=
   d.innerHTML=`<div class="bubble">${proactiveTag}${rendered}</div><div class="time">${t}${sk}${cmpTag}${smTags}${speakBtn}</div>`;
   area.appendChild(d);area.scrollTop=area.scrollHeight
 }
-let speakAudio=null,speakCtl=null,speakQueue=[],speakPlaying=false;
+let speakAudio=null,speakCtl=null,speakQueue=[],speakPlaying=false,speakStalled=false;
 async function speakMsg(btn){try{
-  if(speakCtl){speakCtl.abort();speakCtl=null;speakQueue=[];speakPlaying=false;if(speakAudio)speakAudio.pause();btn.textContent='\ud83d\udd0a';return}
+  // autoplay bloqueado a media cadena: el próximo click reanuda lo que ya estaba sintetizado
+  if(speakStalled&&speakQueue.length){speakStalled=false;btn.textContent='\u23f8';pumpSpeak(btn);return}
+  if(speakCtl){speakCtl.abort();speakCtl=null;speakQueue=[];speakPlaying=false;speakStalled=false;if(speakAudio)speakAudio.pause();btn.textContent='\ud83d\udd0a';return}
   const bubble=btn.closest('.msg').querySelector('.bubble');
   const text=bubble?bubble.innerText.trim():'';
   if(!text)return;
@@ -1614,22 +1616,26 @@ async function speakMsg(btn){try{
     while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
       try{const j=JSON.parse(line);
         if(j.url){speakQueue.push(j.url);pumpSpeak(btn)}
-        else if(j.error){speakCtl=null;speakQueue=[];speakPlaying=false;if(speakAudio)speakAudio.pause();btn.textContent='\u26a0\ufe0f';console.error('TTS:',j.error);return}
+        else if(j.error){speakCtl=null;speakQueue=[];speakPlaying=false;speakStalled=false;if(speakAudio)speakAudio.pause();btn.textContent='\u26a0\ufe0f';console.error('TTS:',j.error);return}
       }catch(e){}}
   }
   // stream terminado: limpiar el controlador o el botón queda pegado en ⏸
   speakCtl=null;
-  if(!speakPlaying&&!speakQueue.length)btn.textContent='\ud83d\udd0a';
+  if(!speakPlaying&&!speakQueue.length&&!speakStalled)btn.textContent='\ud83d\udd0a';
 }catch(e){if(e.name!=='AbortError'){btn.textContent='\u26a0\ufe0f';console.error(e)}}}
 function pumpSpeak(btn){
-  if(speakPlaying)return;
+  if(speakPlaying||speakStalled)return;
   const url=speakQueue.shift();
   if(!url)return;
   speakPlaying=true;
   speakAudio=new Audio(url);
-  speakAudio.onended=()=>{speakPlaying=false;if(speakQueue.length||speakCtl){pumpSpeak(btn)}else{btn.textContent='\ud83d\udd0a'}};
-  speakAudio.onerror=()=>{speakPlaying=false;pumpSpeak(btn)};
-  speakAudio.play();
+  const next=()=>{speakPlaying=false;if(speakQueue.length||speakCtl){pumpSpeak(btn)}else{btn.textContent='\ud83d\udd0a'}};
+  speakAudio.addEventListener('ended',next);
+  speakAudio.addEventListener('error',next);
+  const p=speakAudio.play();
+  if(p&&p.catch)p.catch(()=>{ // autoplay policy: sin gesto válido el navegador rechaza play()
+    speakPlaying=false;speakStalled=true;btn.textContent='\ud83d\udd0a';
+  });
 }
 function setTyping(v){document.getElementById('typing').classList.toggle('on',v)}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
