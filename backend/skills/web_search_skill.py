@@ -39,8 +39,12 @@ async def _search_duckduckgo(query: str, max_results: int = 5, **kwargs) -> list
     import asyncio
 
     def _do_search():
+        # backend="auto" rotates engines (duckduckgo, bing, brave, ...) until
+        # one returns results — the single-engine default gets rate-limited
+        # hard ("No results found." on every query) and takes the whole
+        # provider chain down with it.
         with DDGS() as ddgs:
-            return list(ddgs.text(query, max_results=max_results))
+            return list(ddgs.text(query, max_results=max_results, backend="auto"))
 
     # Run sync library in thread pool
     loop = asyncio.get_event_loop()
