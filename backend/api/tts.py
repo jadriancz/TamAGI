@@ -31,6 +31,12 @@ class TTSRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
 
 
+class StreamTTSRequest(BaseModel):
+    # The stream endpoint chunks to ≤300 chars before synthesis, so its input
+    # cap can sit far above the single-shot 2000 (8000 ≈ 27 chunks ≈ 13 min).
+    text: str = Field(..., min_length=1, max_length=8000)
+
+
 @router.post("")
 async def synthesize(request: TTSRequest):
     text = _clean_for_speech(request.text)
@@ -43,7 +49,7 @@ async def synthesize(request: TTSRequest):
 
 
 @router.post("/stream")
-async def synthesize_stream(request: TTSRequest):
+async def synthesize_stream(request: StreamTTSRequest):
     """Streaming variant: one NDJSON line per synthesized chunk.
 
     The hosted Chatterbox takes ~30s per chunk, so instead of waiting for the
