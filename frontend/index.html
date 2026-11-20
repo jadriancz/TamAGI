@@ -1599,15 +1599,21 @@ function addMsg(role,content,skills=[],ts=null,compressed=0,smMuts=[],proactive=
   d.innerHTML=`<div class="bubble">${proactiveTag}${rendered}</div><div class="time">${t}${sk}${cmpTag}${smTags}${speakBtn}</div>`;
   area.appendChild(d);area.scrollTop=area.scrollHeight
 }
-let speakAudio=null,speakCtl=null,speakQueue=[],speakPlaying=false,speakStalled=false;
+let speakCtx=null,speakSrc=null,speakCtl=null,speakQueue=[],speakPlaying=false,speakStalled=false;
+// Web Audio API (Chrome autoplay policy): un AudioContext creado DENTRO del
+// click queda "running" y el permiso persiste para TODA la cadena — los tramos
+// siguientes ya no dependen de un gesto fresco (developer.chrome.com/blog/autoplay).
+function speakCtxGet(){if(!speakCtx)speakCtx=new (window.AudioContext||window.webkitAudioContext)();return speakCtx}
+function speakStop(){if(speakSrc){try{speakSrc.stop()}catch(e){}speakSrc=null}}
 async function speakMsg(btn){try{
   // autoplay bloqueado a media cadena: el próximo click reanuda lo que ya estaba sintetizado
   if(speakStalled&&speakQueue.length){speakStalled=false;btn.textContent='\u23f8';pumpSpeak(btn);return}
-  if(speakCtl){speakCtl.abort();speakCtl=null;speakQueue=[];speakPlaying=false;speakStalled=false;if(speakAudio)speakAudio.pause();btn.textContent='\ud83d\udd0a';return}
+  if(speakCtl){speakCtl.abort();speakCtl=null;speakQueue=[];speakPlaying=false;speakStalled=false;speakStop();btn.textContent='\ud83d\udd0a';return}
   const bubble=btn.closest('.msg').querySelector('.bubble');
   const text=bubble?bubble.innerText.trim():'';
   if(!text)return;
   btn.textContent='\u23f8';
+  speakCtxGet().resume().catch(()=>{});  // dentro del gesto → running
   speakCtl=new AbortController();speakQueue=[];
   const r=await fetch(`${API}/api/tts/stream`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text}),signal:speakCtl.signal});
   const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
@@ -1616,26 +1622,32 @@ async function speakMsg(btn){try{
     while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
       try{const j=JSON.parse(line);
         if(j.url){speakQueue.push(j.url);pumpSpeak(btn)}
-        else if(j.error){speakCtl=null;speakQueue=[];speakPlaying=false;speakStalled=false;if(speakAudio)speakAudio.pause();btn.textContent='\u26a0\ufe0f';console.error('TTS:',j.error);return}
+        else if(j.error){speakCtl=null;speakQueue=[];speakPlaying=false;speakStalled=false;speakStop();btn.textContent='\u26a0\ufe0f';console.error('TTS:',j.error);return}
       }catch(e){}}
   }
   // stream terminado: limpiar el controlador o el botón queda pegado en ⏸
   speakCtl=null;
   if(!speakPlaying&&!speakQueue.length&&!speakStalled)btn.textContent='\ud83d\udd0a';
 }catch(e){if(e.name!=='AbortError'){btn.textContent='\u26a0\ufe0f';console.error(e)}}}
-function pumpSpeak(btn){
+async function pumpSpeak(btn){
   if(speakPlaying||speakStalled)return;
   const url=speakQueue.shift();
   if(!url)return;
   speakPlaying=true;
-  speakAudio=new Audio(url);
-  const next=()=>{speakPlaying=false;if(speakQueue.length||speakCtl){pumpSpeak(btn)}else{btn.textContent='\ud83d\udd0a'}};
-  speakAudio.addEventListener('ended',next);
-  speakAudio.addEventListener('error',next);
-  const p=speakAudio.play();
-  if(p&&p.catch)p.catch(()=>{ // autoplay policy: sin gesto válido el navegador rechaza play()
+  try{
+    const ctx=speakCtxGet();
+    if(ctx.state==='suspended')await ctx.resume();
+    const raw=await (await fetch(url)).arrayBuffer();
+    const audio=await ctx.decodeAudioData(raw);
+    if(!speakCtl&&!speakQueue.length&&!speakPlaying){return} // abortado mientras descargaba
+    const src=ctx.createBufferSource();
+    src.buffer=audio;src.connect(ctx.destination);speakSrc=src;
+    src.onended=()=>{speakPlaying=false;if(speakQueue.length||speakCtl){pumpSpeak(btn)}else{btn.textContent='\ud83d\udd0a'}};
+    src.start();
+  }catch(e){ // rechazo de autoplay u error de red: pausa reanudable
+    console.error('TTS:',e);
     speakPlaying=false;speakStalled=true;btn.textContent='\ud83d\udd0a';
-  });
+  }
 }
 function setTyping(v){document.getElementById('typing').classList.toggle('on',v)}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
