@@ -1612,8 +1612,14 @@ async function speakMsg(btn){try{
   while(true){const{done,value}=await reader.read();if(done)break;
     buf+=dec.decode(value,{stream:true});let nl;
     while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
-      try{const j=JSON.parse(line);if(j.url){speakQueue.push(j.url);pumpSpeak(btn)}}catch(e){}}
+      try{const j=JSON.parse(line);
+        if(j.url){speakQueue.push(j.url);pumpSpeak(btn)}
+        else if(j.error){speakCtl=null;speakQueue=[];speakPlaying=false;if(speakAudio)speakAudio.pause();btn.textContent='\u26a0\ufe0f';console.error('TTS:',j.error);return}
+      }catch(e){}}
   }
+  // stream terminado: limpiar el controlador o el botón queda pegado en ⏸
+  speakCtl=null;
+  if(!speakPlaying&&!speakQueue.length)btn.textContent='\ud83d\udd0a';
 }catch(e){if(e.name!=='AbortError'){btn.textContent='\u26a0\ufe0f';console.error(e)}}}
 function pumpSpeak(btn){
   if(speakPlaying)return;
