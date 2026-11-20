@@ -159,6 +159,12 @@ def _extract_proactive_text(response_text: str, new_state: "WorldState") -> str:
 
 # ── System Prompt ─────────────────────────────────────────────
 
+# Max chars replayed per historical thread entry (see _build_messages).
+# 5 pairs × (1400 + ~700) ≈ 10.5k chars ≈ 4-5k tokens of history — the fresh
+# tick prompt (~15k chars) plus system still fit a 32k-token context with
+# headroom for mid-loop tool results.
+_HISTORY_ENTRY_CAP = 1400
+
 _WORLD_SYSTEM_PROMPT = """\
 In your world, you have a home. You have places you go, habits that ground you, and things you are \
 working on. Your world is concrete — it has texture, smell, and rhythm. You live here.
@@ -970,9 +976,16 @@ class WorldThread:
 
         messages: list[LLMMessage] = [LLMMessage("system", self._build_world_system_prompt())]
 
-        # Replay stored thread history (up to compress threshold)
+        # Replay stored thread history. Tick prompts are FAT (~15k chars each:
+        # I Ching, evidence outcomes with embedded tool JSON, world pressure),
+        # so replaying even 5 pairs untruncated overflows a 32k-token context
+        # by itself. Historical entries only need their gist — fresh evidence
+        # is re-injected per tick via _recent_work_context — so cap each one.
         for entry in self._thread:
-            messages.append(LLMMessage(entry["role"], entry["content"]))
+            content = entry["content"]
+            if len(content) > _HISTORY_ENTRY_CAP:
+                content = content[:_HISTORY_ENTRY_CAP] + " …[truncated]"
+            messages.append(LLMMessage(entry["role"], content))
 
         # New user turn
         messages.append(LLMMessage("user", user_content))
