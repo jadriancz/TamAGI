@@ -117,6 +117,17 @@ class HistoryConfig(BaseModel):
     context_compress_threshold: int = 32000
 
 
+class TTSConfig(BaseModel):
+    """Text-to-speech (NVIDIA NIM Chatterbox Multilingual, gRPC/NVCF)."""
+    # Empty api_key reuses config.llm.api_key (same NIM account).
+    api_key: str = ""
+    # Hosted function id for resembleai/chatterbox-multilingual-tts
+    # (extracted from the build.nvidia.com page, 2026-11-19).
+    function_id: str = "ddacc747-1269-4fab-bfd9-8f593dead106"
+    voice: str = "Chatterbox-Multilingual.es-ES.Male"
+    language: str = "es-ES"
+
+
 class WebSearchConfig(BaseModel):
     """Web search provider configuration."""
     provider: str = "duckduckgo"  # duckduckgo | brave | searxng
@@ -267,6 +278,7 @@ class TamAGIConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    tts: TTSConfig = Field(default_factory=TTSConfig)
     autonomy: AutonomyConfig = Field(default_factory=AutonomyConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)

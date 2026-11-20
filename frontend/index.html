@@ -359,6 +359,8 @@
       border-bottom-left-radius: var(--radius-sm);
     }
     .msg .time { font-size: 9px; color: var(--text-muted); margin-top: 3px; padding: 0 4px; }
+    .speak-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 11px; padding: 0 3px; margin-left: 6px; opacity: 0.7; vertical-align: middle; }
+    .speak-btn:hover { opacity: 1; color: var(--accent); }
     .msg.user .time { text-align: right; }
     .skill-tag { display: inline-block; padding: 2px 8px; background: var(--bg-elevated); border-radius: 4px; font-size: 10px; color: var(--accent-tertiary); margin-left: 4px; font-weight: 500; border: 1px solid var(--border-bright); }
     .skill-tag.running { color: var(--accent); animation: tag-pulse 1s ease-in-out infinite; }
@@ -1593,8 +1595,35 @@ function addMsg(role,content,skills=[],ts=null,compressed=0,smMuts=[],proactive=
     return'';
   }).join('');
   const rendered=role==='assistant'?renderMd(content):esc(content);
-  d.innerHTML=`<div class="bubble">${proactiveTag}${rendered}</div><div class="time">${t}${sk}${cmpTag}${smTags}</div>`;
+  const speakBtn=role==='assistant'?'<button class="speak-btn" onclick="speakMsg(this)" title="Escuchar">\ud83d\udd0a</button>':'';
+  d.innerHTML=`<div class="bubble">${proactiveTag}${rendered}</div><div class="time">${t}${sk}${cmpTag}${smTags}${speakBtn}</div>`;
   area.appendChild(d);area.scrollTop=area.scrollHeight
+}
+let speakAudio=null,speakCtl=null,speakQueue=[],speakPlaying=false;
+async function speakMsg(btn){try{
+  if(speakCtl){speakCtl.abort();speakCtl=null;speakQueue=[];speakPlaying=false;if(speakAudio)speakAudio.pause();btn.textContent='\ud83d\udd0a';return}
+  const bubble=btn.closest('.msg').querySelector('.bubble');
+  const text=bubble?bubble.innerText.trim():'';
+  if(!text)return;
+  btn.textContent='\u23f8';
+  speakCtl=new AbortController();speakQueue=[];
+  const r=await fetch(`${API}/api/tts/stream`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text}),signal:speakCtl.signal});
+  const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
+  while(true){const{done,value}=await reader.read();if(done)break;
+    buf+=dec.decode(value,{stream:true});let nl;
+    while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
+      try{const j=JSON.parse(line);if(j.url){speakQueue.push(j.url);pumpSpeak(btn)}}catch(e){}}
+  }
+}catch(e){if(e.name!=='AbortError'){btn.textContent='\u26a0\ufe0f';console.error(e)}}}
+function pumpSpeak(btn){
+  if(speakPlaying)return;
+  const url=speakQueue.shift();
+  if(!url)return;
+  speakPlaying=true;
+  speakAudio=new Audio(url);
+  speakAudio.onended=()=>{speakPlaying=false;if(speakQueue.length||speakCtl){pumpSpeak(btn)}else{btn.textContent='\ud83d\udd0a'}};
+  speakAudio.onerror=()=>{speakPlaying=false;pumpSpeak(btn)};
+  speakAudio.play();
 }
 function setTyping(v){document.getElementById('typing').classList.toggle('on',v)}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}

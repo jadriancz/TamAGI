@@ -23,6 +23,7 @@ dependencies = [
     # Web search default provider (requirements.txt had it; pyproject didn't,
     # so uv-built venvs shipped without it and web_search silently failed).
     "ddgs>=7.0.0",
+    "nvidia-riva-client>=1.19.0",
 ]
 
 [project.scripts]
